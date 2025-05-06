@@ -1,5 +1,5 @@
 # autodrive.py
-
+import multiprocessing as mp
 import keyboard
 import time
 import sys
@@ -7,9 +7,12 @@ import signal
 import cv2
 import numpy as np
 from grabscreen import grab_screen, init_camera
+from utils.change_window import check_window_resolution_same, correction_window
 from window import BaseWindow, set_windows_offset, game_width, game_height
 import logging
 from pynput.keyboard import Key, Controller
+
+from detector import RoadDetector, YOLODetector
 
 # Configure logging
 logging.basicConfig(
@@ -18,6 +21,8 @@ logging.basicConfig(
     filename='autodrive.log',
     filemode='w'
 )
+
+running_event = mp.Event()
 log = logging.getLogger("AutoDrive")
 
 # Virtual keyboard controller
@@ -71,77 +76,6 @@ class TruckDashboard(BaseWindow):
             log.error(f"Error processing dashboard: {e}")
 
 
-class RoadDetector(BaseWindow):
-    def __init__(self, sx, sy, ex, ey):
-        super().__init__(sx, sy, ex, ey)
-        self.lane_center = 0.0  # Position of lane center relative to screen center
-        self.road_visible = False
-        self.obstacle_detected = False
-        self.distance_to_obstacle = 100.0  # meters
-
-    def process_data(self):
-        """Detect lane position and obstacles"""
-        if self.color is None:
-            return
-
-        try:
-            # Convert to more usable formats
-            gray = cv2.cvtColor(self.color, cv2.COLOR_BGR2GRAY)
-            hsv = cv2.cvtColor(self.color, cv2.COLOR_BGR2HSV)
-
-            # Sample the bottom half of the image for lane detection
-            height, width = gray.shape
-            bottom_half = gray[height // 2:, :]
-
-            # Simple edge detection
-            edges = cv2.Canny(bottom_half, 100, 200)
-
-            # Detect lines using Hough transform
-            lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=50,
-                                    minLineLength=50, maxLineGap=10)
-
-            # Lane visibility check
-            self.road_visible = lines is not None and len(lines) > 0
-
-            if self.road_visible:
-                # Calculate lane center (simplified)
-                center_sum = 0
-                count = 0
-
-                for line in lines:
-                    x1, y1, x2, y2 = line[0]
-                    center = (x1 + x2) / 2
-                    center_sum += center
-                    count += 1
-
-                if count > 0:
-                    avg_center = center_sum / count
-                    self.lane_center = (avg_center - (width / 2)) / (width / 2)  # -1 to 1 range
-
-            # Simple obstacle detection (looking for large objects in the middle distance)
-            # This is highly simplified and would need to be adapted for the actual game
-            middle_region = hsv[height // 3:2 * height // 3, width // 3:2 * width // 3]
-            # Look for dark objects as potential obstacles
-            dark_mask = cv2.inRange(middle_region, (0, 0, 0), (180, 255, 80))
-
-            obstacle_pixels = cv2.countNonZero(dark_mask)
-            obstacle_ratio = obstacle_pixels / (middle_region.shape[0] * middle_region.shape[1])
-
-            self.obstacle_detected = obstacle_ratio > 0.2  # Arbitrary threshold
-
-            if self.obstacle_detected:
-                # Crude distance calculation
-                self.distance_to_obstacle = 100 * (1.0 - obstacle_ratio)
-            else:
-                self.distance_to_obstacle = 100.0
-
-            log.debug(f"Lane center: {self.lane_center:.2f}, Road visible: {self.road_visible}, "
-                      f"Obstacle: {self.obstacle_detected}, Distance: {self.distance_to_obstacle:.1f}m")
-
-        except Exception as e:
-            log.error(f"Error processing road data: {e}")
-
-
 # Initialize screen regions
 # These coordinates would need to be adjusted for EuroTruck Simulator 2
 dashboard = TruckDashboard(100, 500, 400, 600)  # Example coordinates
@@ -155,76 +89,108 @@ def signal_handler(sig, frame):
     sys.exit(0)
 
 
-def wait_for_game_window():
-    """Wait until game window is detected"""
-    log.info("Waiting for EuroTruck Simulator 2 window...")
-    while running:
+def wait_for_game_window(running_event):
+    while running_event.is_set():
         frame = grab_screen()
         if frame is not None and set_windows_offset(frame):
-            log.info("Game window detected!")
+            log.debug("Game window detected and offsets set!")
             return True
         time.sleep(1)
     return False
 
 
+# def process_yolo_detection(detector):
+#     """Process YOLO detection on current frame"""
+#     try:
+#         # Get current frame
+#         frame = grab_screen()
+#         if frame is None:
+#             return
+#
+#         # Run detection
+#         results = detector.detect(frame)
+#
+#         # Process and visualize detections
+#         detected_objects, detected_classes = detector.process_detections(frame, results)
+#
+#         if detected_objects:
+#             log.debug(f"Detected {len(detected_objects)} objects: {detected_classes}")
+#
+#             # You can add additional logic here based on detections
+#             # For example, emergency braking for obstacles
+#             for obj in detected_objects:
+#                 # Example: If a vehicle is detected too close, brake
+#                 if obj['class_name'] in ['car', 'truck', 'bus', 'van'] and obj['confidence'] > 0.7:
+#                     # Calculate position and size to determine proximity
+#                     x1, y1, x2, y2 = obj['bbox']
+#                     box_height = y2 - y1
+#
+#                     # If object is in bottom half of screen and large, it's probably close
+#                     if y2 > frame.shape[0] / 2 and box_height > frame.shape[0] / 4:
+#                         log.warning(f"Emergency braking! Large {obj['class_name']} detected")
+#                         if autodrive_active:
+#                             press_key('s', 0.5)  # Apply brakes
+#
+#     except Exception as e:
+#         log.error(f"Error in YOLO detection: {e}")
+
+
 def press_key(key, duration=0.1):
     """Press and hold a key for a duration"""
-    global last_key_press_time
-
-    # Rate limiting to avoid flooding the game with inputs
-    current_time = time.time()
-    if current_time - last_key_press_time < key_press_interval:
-        return
-
-    last_key_press_time = current_time
-
-    log.debug(f"Pressing key: {key} for {duration}s")
     kb_controller.press(key)
     time.sleep(duration)
     kb_controller.release(key)
 
 
-def control_truck():
-    """Apply control inputs based on detected road conditions"""
-    global truck_steering
-
-    # Only control if autodrive is active
+def control_truck(detected_objects=None):
+    """Apply control inputs based on detected objects"""
     if not autodrive_active:
         return
 
     try:
-        # Simple lane following logic
-        if road_view.road_visible:
-            # Convert lane position to steering input
-            target_steering = -road_view.lane_center  # Negative because we want to steer toward the center
+        # Default movement - go forward
+        if not detected_objects:
+            press_key('w', 0.2)
+            return
 
-            # Apply smoothing to steering
-            steering_delta = target_steering - truck_steering
-            truck_steering += steering_delta * 0.2  # Gradual steering adjustment
+        # Check for objects that need avoidance
+        need_braking = False
+        need_left_turn = False
+        need_right_turn = False
 
-            # Apply steering based on calculated value
-            if truck_steering > 0.2:
-                press_key('d', min(0.1, abs(truck_steering) * 0.2))
-            elif truck_steering < -0.2:
-                press_key('a', min(0.1, abs(truck_steering) * 0.2))
+        for obj in detected_objects:
+            if obj['class_name'] in ['car', 'truck', 'bus', 'person', 'bicycle', 'motorcycle']:
+                x1, y1, x2, y2 = obj['bbox']
+                obj_width = x2 - x1
+                obj_height = y2 - y1
 
-            # Speed control based on obstacles
-            if road_view.obstacle_detected:
-                if road_view.distance_to_obstacle < 30:
-                    # Brake if obstacle is close
-                    press_key('s', 0.2)
-                else:
-                    # Slow down
-                    time.sleep(0.1)
-            else:
-                # Accelerate if road is clear
-                press_key('w', 0.2)
+                # Calculate position relative to screen center
+                center_x = (x1 + x2) / 2
+                screen_center_x = window.game_width / 2
+                relative_pos = (center_x - screen_center_x) / screen_center_x  # -1 to 1
+
+                # Check if object is too close (large height)
+                if obj_height > window.game_height / 4:
+                    need_braking = True
+                # If object is on left side but not too close
+                elif relative_pos < -0.2 and obj_height > window.game_height / 6:
+                    need_right_turn = True
+                # If object is on right side but not too close
+                elif relative_pos > 0.2 and obj_height > window.game_height / 6:
+                    need_left_turn = True
+
+        # Apply controls based on detection
+        if need_braking:
+            press_key('s', 0.3)
+        elif need_left_turn:
+            press_key('a', 0.2)
+        elif need_right_turn:
+            press_key('d', 0.2)
         else:
-            # If road isn't visible, slow down
-            press_key('s', 0.1)
+            press_key('w', 0.2)
 
     except Exception as e:
-        log.error(f"Error in truck control: {e}")
+        log.debug(f"Error in truck control: {e}")
 
 
 def update_screen_info():
@@ -255,22 +221,21 @@ def check_keyboard_commands():
     """Check for keyboard commands from user"""
     global autodrive_active
 
-    # Toggle autodrive with z
+    # Toggle autodrive with F8
     if keyboard.is_pressed('z'):
         autodrive_active = not autodrive_active
-        log.info(f"AutoDrive {'activated' if autodrive_active else 'deactivated'}")
+        log.debug(f"AutoDrive {'activated' if autodrive_active else 'deactivated'}")
         time.sleep(0.5)  # Debounce
 
     # Emergency stop with Escape
     if keyboard.is_pressed('x'):
         if autodrive_active:
             autodrive_active = False
-            log.info("Emergency stop activated")
+            log.debug("Emergency stop activated")
             # Apply brakes
             kb_controller.press('s')
             time.sleep(1.0)
             kb_controller.release('s')
-            time.sleep(0.5)  # Debounce
 
 
 def main():
@@ -284,38 +249,83 @@ def main():
     # Initialize screen capture
     init_camera(target_fps)
 
-    # Wait for game window
-    if not wait_for_game_window():
-        log.error("Failed to detect game window.")
-        return
+    try:
+        correction_window()
+        if not check_window_resolution_same(game_width, game_height):
+            log.debug(
+                f"Game resolution doesn't match configuration: game_width({game_width}), game_height({game_height})"
+            )
+            # Continue anyway - we'll work with what we have
+    except Exception as e:
+        log.debug(f"Warning: Could not set window resolution: {e}")
 
-    log.info("Press z to toggle AutoDrive, x to emergency stop")
+    running_event.set()
+
+    # Wait for game window with a timeout
+    game_window_found = False
+    timeout = 10  # seconds
+    start_time = time.time()
+
+    while time.time() - start_time < timeout:
+        frame = grab_screen()
+        if frame is not None:
+            # Just use the frame as-is if window detection fails
+            BaseWindow.set_frame(frame)
+            BaseWindow.update_all()
+            game_window_found = True
+            break
+        time.sleep(1)
+
+    if not game_window_found:
+        log.debug("Could not detect game window, but continuing with screen capture.")
+
+    # Initialize YOLO detector
+    yolo_detector = YOLODetector("runs/detect/kitti_yolo11/weights/best.pt", log)
+
+    log.debug("Press Z to toggle AutoDrive, ESC for emergency stop")
+    print("set",running_event.is_set())
 
     try:
-        # Main loop
-        while running:
-            # Check for user commands
+        while running_event.is_set():
+            # Check for keyboard commands
             check_keyboard_commands()
 
-            # Update screen information
-            update_screen_info()
+            # Get current frame
+            frame = grab_screen()
+            if frame is None:
+                log.debug("Failed to capture screen. Retrying...")
+                time.sleep(0.5)
+                continue
 
-            # Control the truck if autodrive is active
-            control_truck()
+            # Update window with current frame
+            BaseWindow.set_frame(frame)
+            BaseWindow.update_all()
 
-            # Sleep to avoid excessive CPU usage
-            time.sleep(0.01)
+            # Run YOLO detection on frame
+            results = yolo_detector.detect(frame)
+            detected_objects, detected_classes = yolo_detector.process_detections(frame, results)
+
+            # # Visualize detections (can be commented out if not needed)
+            # visualize_detections(frame, detected_objects)
+
+            # Control truck based on detections
+            if autodrive_active:
+                control_truck(detected_objects)
+
+            # Short sleep to reduce CPU usage
+            time.sleep(0.05)
 
     except KeyboardInterrupt:
-        log.info("Exiting due to keyboard interrupt")
+        log.debug("Main process: Exiting due to keyboard interrupt...")
     except Exception as e:
-        log.error(f"Unexpected error: {e}")
+        log.debug(f"An error occurred in main: {e}")
     finally:
-        # Release all keys to avoid stuck inputs
-        keys = ['w', 'a', 's', 'd']
-        for key in keys:
+        # Release all held keys
+        for key in ['w', 'a', 's', 'd']:
             kb_controller.release(key)
+        print("Released all keys")
         cv2.destroyAllWindows()
+        running_event.clear()
 
 
 if __name__ == '__main__':

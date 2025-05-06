@@ -212,7 +212,7 @@ if __name__ == "__main__":
 
     if mode == "image":
         # Test on a single image
-        test_image = "output_frames/1/1_frame_000885.jpg"
+        test_image = "output_frames/2/2_frame_000585.jpg"
         img, result = detect_image(model, test_image, conf_threshold=0.25)
 
     elif mode == "video":
