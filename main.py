@@ -255,14 +255,14 @@ def check_keyboard_commands():
     """Check for keyboard commands from user"""
     global autodrive_active
 
-    # Toggle autodrive with =
-    if keyboard.is_pressed('F4'):
+    # Toggle autodrive with z
+    if keyboard.is_pressed('z'):
         autodrive_active = not autodrive_active
         log.info(f"AutoDrive {'activated' if autodrive_active else 'deactivated'}")
         time.sleep(0.5)  # Debounce
 
     # Emergency stop with Escape
-    if keyboard.is_pressed('esc'):
+    if keyboard.is_pressed('x'):
         if autodrive_active:
             autodrive_active = False
             log.info("Emergency stop activated")
@@ -289,7 +289,7 @@ def main():
         log.error("Failed to detect game window.")
         return
 
-    log.info("Press F4 to toggle AutoDrive, ESC to emergency stop")
+    log.info("Press z to toggle AutoDrive, x to emergency stop")
 
     try:
         # Main loop
