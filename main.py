@@ -173,7 +173,7 @@ def control_truck(detected_objects=None):
             log.debug(
                 f"Objects by position: left={len(left_objects)}, center={len(center_objects)}, right={len(right_objects)}")
 
-            # Decision making based on object positions
+            # based on object positions
             emergency_brake = False
 
             # Check for immediate collision threats in center
@@ -484,7 +484,7 @@ def main():
             # Display status information
             try:
                 status_frame = np.zeros((200, 400, 3), dtype=np.uint8)
-                cv2.putText(status_frame, f"AutoDrive: {'ON' if autodrive_active WAWelse 'OFF'}",
+                cv2.putText(status_frame, f"AutoDrive: {'ON' if autodrive_active else 'OFF'}",
                             (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0) if autodrive_active else (0, 0, 255),
                             2)
 
