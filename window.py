@@ -1,6 +1,7 @@
 # window.py
 import cv2
 import numpy as np
+import pytesseract
 import utils
 from utils.change_window import check_window_resolution_same
 
@@ -109,6 +110,33 @@ class StatusWindow(BaseWindow):
     def process_color(self):
         # 子类需要实现具体的处理逻辑
         pass
+
+    def get_status(self):
+        return self.status
+
+
+class NumericStatusWindow(StatusWindow):
+    def __init__(self, sx, sy, ex, ey, ocr_config="--psm 7"):
+        super().__init__(sx, sy, ex, ey)
+        self.ocr_config = ocr_config  # PSM 7 is good for single lines/numbers
+
+    def process_color(self):
+        # Preprocess image for better OCR accuracy
+        gray = cv2.cvtColor(self.color, cv2.COLOR_BGR2GRAY)
+        _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+        # Optional: Resize to improve OCR accuracy
+        scale = 2
+        resized = cv2.resize(thresh, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_LINEAR)
+
+        # OCR to extract text
+        text = pytesseract.image_to_string(resized, config=self.ocr_config).strip()
+
+        # Extract numerical value
+        try:
+            self.status = int(''.join(filter(str.isdigit, text)))
+        except ValueError:
+            self.status = 0  # Fallback if no valid number found
 
     def get_status(self):
         return self.status
@@ -363,25 +391,27 @@ game_window = BaseWindow(0, 0, game_width, game_height)
 # self_magic_window = MagicWindow(*convert_coordinates(141, 669, 366, 675))
 # self_energy_window = EnergyWindow(*convert_coordinates(140, 678, 352, 682))
 
-self_blood_window = BloodWindow(*convert_coordinates(138, 655, 244, 664))
-self_magic_window = MagicWindow(*convert_coordinates(141, 669, 234, 675))
-self_energy_window = EnergyWindow(*convert_coordinates(140, 678, 234, 682))
-
-skill_1_window = SkillWindow(*convert_coordinates(1110, 571, 1120, 580))
-skill_2_window = SkillWindow(*convert_coordinates(1147, 571, 1156, 580))
-skill_3_window = SkillWindow(*convert_coordinates(1184, 571, 1193, 580))
-skill_4_window = SkillWindow(*convert_coordinates(1221, 571, 1230, 580))
-
-skill_ts_window = SkillTSWindow(*convert_coordinates(995, 694, 1005, 703))
-skill_fb_window = SkillFBWindow(*convert_coordinates(1061, 694, 1071, 703))
-
-gunshi1_window = GunShiWindow(*convert_coordinates(1191, 691, 1198, 697))
-gunshi2_window = GunShiWindow(*convert_coordinates(1205, 681, 1211, 686))
-gunshi3_window = GunShiWindow(*convert_coordinates(1211, 663, 1219, 671))
-
-hulu_window = HuluWindow(*convert_coordinates(82, 645, 88, 679))
-
-q_window = SkillWindow(*convert_coordinates(185, 542, 195, 551))
+# 根据游戏调整
+self_speed_window = NumericStatusWindow(*convert_coordinates(1155, 539, 1220, 555))
+self_distance_window = NumericStatusWindow(*convert_coordinates(1020, 556, 1070, 570))
+self_time_window = NumericStatusWindow(1100, 556, 1140, 570)
+# self_energy_window = EnergyWindow(*convert_coordinates(140, 678, 234, 682))
+#
+# skill_1_window = SkillWindow(*convert_coordinates(1110, 571, 1120, 580))
+# skill_2_window = SkillWindow(*convert_coordinates(1147, 571, 1156, 580))
+# skill_3_window = SkillWindow(*convert_coordinates(1184, 571, 1193, 580))
+# skill_4_window = SkillWindow(*convert_coordinates(1221, 571, 1230, 580))
+#
+# skill_ts_window = SkillTSWindow(*convert_coordinates(995, 694, 1005, 703))
+# skill_fb_window = SkillFBWindow(*convert_coordinates(1061, 694, 1071, 703))
+#
+# gunshi1_window = GunShiWindow(*convert_coordinates(1191, 691, 1198, 697))
+# gunshi2_window = GunShiWindow(*convert_coordinates(1205, 681, 1211, 686))
+# gunshi3_window = GunShiWindow(*convert_coordinates(1211, 663, 1219, 671))
+#
+# hulu_window = HuluWindow(*convert_coordinates(82, 645, 88, 679))
+#
+# q_window = SkillWindow(*convert_coordinates(185, 542, 195, 551))
 
 # roi_x_size = 300  # ROI的宽度和高度（以游戏窗口中心为中心的矩形）
 # roi_y_size = 400  # ROI的宽度和高度（以游戏窗口中心为中心的矩形）
