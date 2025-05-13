@@ -3,7 +3,7 @@ import ctypes
 import win32gui
 from log import log
 
-WUKONG_TITLE = "b1  "
+EURO_TITLE = "Euro Truck Simulator 2"  # 窗口标题
 WUKONG_CLASS_NAME = "UnrealWindow"  # 也可以使用类名去寻找窗口 getWindowsWithClass
 
 
@@ -26,7 +26,7 @@ def move_window(title, x, y):
 
 # 移动窗口到左上角
 def set_window_topleft():
-    move_window(WUKONG_TITLE, -8, 0)
+    move_window(EURO_TITLE, -8, 0)
 
 
 def is_window_visible(window_title):
@@ -56,20 +56,20 @@ def restore_window(window_title):
 
 # 校正窗口位置
 def correction_window():
-    if not is_window_visible(WUKONG_TITLE):
-        print(f"{WUKONG_TITLE} is not visible.")
-        restore_window(WUKONG_TITLE)  # 尝试恢复窗口
-        gw.getWindowsWithTitle(WUKONG_TITLE)[0].activate()  # 激活窗口
+    if not is_window_visible(EURO_TITLE):
+        print(f"{EURO_TITLE} is not visible.")
+        restore_window(EURO_TITLE)  # 尝试恢复窗口
+        gw.getWindowsWithTitle(EURO_TITLE)[0].activate()  # 激活窗口
         set_window_topleft()
 
-    elif not is_window_active(WUKONG_TITLE):
-        print(f"{WUKONG_TITLE} is in the background.")
-        restore_window(WUKONG_TITLE)  # 尝试恢复窗口
-        gw.getWindowsWithTitle(WUKONG_TITLE)[0].activate()  # 激活窗口
+    elif not is_window_active(EURO_TITLE):
+        print(f"{EURO_TITLE} is in the background.")
+        restore_window(EURO_TITLE)  # 尝试恢复窗口
+        gw.getWindowsWithTitle(EURO_TITLE)[0].activate()  # 激活窗口
         set_window_topleft()
 
     else:
-        print(f"{WUKONG_TITLE} is visible and active.")
+        print(f"{EURO_TITLE} is visible and active.")
 
 
 def get_window_resolution(window_title):
@@ -89,6 +89,6 @@ def get_window_resolution(window_title):
 
 # 检查游戏窗口分辨率是否和配置一致
 def check_window_resolution_same(weight, height):
-    resolution = get_window_resolution(WUKONG_TITLE)
+    resolution = get_window_resolution(EURO_TITLE)
     log.debug(f"实际分辨率：{resolution}")
     return resolution[0] == weight and resolution[1] == height

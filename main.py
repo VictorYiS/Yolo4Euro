@@ -93,12 +93,11 @@ def signal_handler(sig, frame):
 
 
 def wait_for_game_window(running_event):
-    while running_event.is_set():
-        frame = grab_screen()
-        if frame is not None and set_windows_offset(frame):
-            log.debug("Game window detected and offsets set!")
-            return True
-        time.sleep(1)
+    frame = grab_screen()
+    if frame is not None and set_windows_offset(frame):
+        log.debug("Game window detected and offsets set!")
+        return True
+    time.sleep(1)
     return False
 
 
@@ -322,6 +321,16 @@ def check_keyboard_commands():
             kb_controller.release('s')
 
 
+def wait_for_game_window(running_event):
+    while running_event.is_set():
+        frame = grab_screen()
+        if frame is not None and set_windows_offset(frame):
+            log.debug("Game window detected and offsets set!")
+            return True
+        time.sleep(1)
+    return False
+
+
 def main():
     global running, log
 
@@ -390,18 +399,6 @@ def main():
     start_time = time.time()
     log.debug(f"Waiting for game window (timeout: {timeout}s)")
 
-    while time.time() - start_time < timeout:
-        frame = grab_screen()
-        if frame is not None:
-            log.debug(f"Frame captured: {frame.shape}")
-            # Just use the frame as-is if window detection fails
-            BaseWindow.set_frame(frame)
-            BaseWindow.update_all()
-            game_window_found = True
-            break
-        time.sleep(1)
-        log.debug("Waiting for frame...")
-
     if not game_window_found:
         log.debug("Could not detect game window, but continuing with screen capture.")
 
@@ -437,16 +434,12 @@ def main():
 
             # Get current frame
             frame = grab_screen()
-            if frame is None:
+            if wait_for_game_window(running_event) is False:
                 log.debug("Failed to capture screen. Retrying...")
                 time.sleep(0.5)
                 continue
 
             log.debug(f"Frame captured: {frame.shape}")
-
-            # Update window with current frame
-            BaseWindow.set_frame(frame)
-            BaseWindow.update_all()
 
             # Process road and lane detection
             if hasattr(road_view, 'process_data'):
