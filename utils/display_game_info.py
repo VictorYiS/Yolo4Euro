@@ -113,7 +113,7 @@ class GameStatusApp:
         frame = self.frame
 
         # 创建标签
-        label = tk.Label(frame, text=f"{var_name}: 0.00%")
+        label = tk.Label(frame, text=f"{var_name}: 0.00")
         label.pack(anchor="w", pady=2)
 
         # 存储变量信息
@@ -149,10 +149,10 @@ def main_loop():
 
     # 添加初始变量（示例）
 
-    app.add_variable("Speed", var_type="integer")
-    app.add_variable("Distance", var_type="integer")
+    app.add_variable("self_speed", var_type="integer")
+    app.add_variable("self_distance", var_type="integer")
 
-    app.add_variable("Time", var_type="float")
+    app.add_variable("self_time", var_type="String")
 
     if wait_for_game_window():
         display_gui_elements()
@@ -178,6 +178,7 @@ def main_loop():
 
 
 if __name__ == "__main__":
+    time.sleep(1.0)
     grabscreen.init_camera(target_fps=30)
 
     change_window.correction_window()

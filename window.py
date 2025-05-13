@@ -1,4 +1,6 @@
 # window.py
+import re
+
 import cv2
 import numpy as np
 import pytesseract
@@ -115,203 +117,122 @@ class StatusWindow(BaseWindow):
         return self.status
 
 
-class NumericStatusWindow(StatusWindow):
-    def __init__(self, sx, sy, ex, ey, ocr_config="--psm 7"):
+# 数值窗口类，用于扫描窗口中的数值大小
+class NumberWindow(StatusWindow):
+    def __init__(self, sx, sy, ex, ey, min_value=0, max_value=100):
         super().__init__(sx, sy, ex, ey)
-        self.ocr_config = ocr_config  # PSM 7 is good for single lines/numbers
+        self.value = 0
+        self.min_value = min_value
+        self.max_value = max_value
+        self.gray = None
 
     def process_color(self):
-        # Preprocess image for better OCR accuracy
-        gray = cv2.cvtColor(self.color, cv2.COLOR_BGR2GRAY)
-        _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        # 转换为灰度图
+        self.gray = cv2.cvtColor(self.color, cv2.COLOR_BGR2GRAY)
 
-        # Optional: Resize to improve OCR accuracy
-        scale = 2
-        resized = cv2.resize(thresh, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_LINEAR)
+        # 对图像进行预处理以提高OCR精度
+        _, binary = cv2.threshold(self.gray, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
 
-        # OCR to extract text
-        text = pytesseract.image_to_string(resized, config=self.ocr_config).strip()
-
-        # Extract numerical value
+        # 使用pytesseract进行OCR识别
         try:
-            self.status = int(''.join(filter(str.isdigit, text)))
-        except ValueError:
-            self.status = 0  # Fallback if no valid number found
+            # 配置pytesseract只识别数字
+            custom_config = r'--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789.'
+            text = pytesseract.image_to_string(binary, config=custom_config).strip()
 
-    def get_status(self):
-        return self.status
-
-
-# 灰度窗口的基类
-class GrayWindow(StatusWindow):
-    def __init__(self, sx, sy, ex, ey):
-        super().__init__(sx, sy, ex, ey)
-        self.gray = None
-
-    def process_color(self):
-        self.gray = (
-            cv2.cvtColor(self.color, cv2.COLOR_BGR2GRAY)
-            if self.color is not None
-            else None
-        )
-
-
-# 亮度窗口的基类
-class HLSWindow(StatusWindow):
-    def __init__(self, sx, sy, ex, ey):
-        super().__init__(sx, sy, ex, ey)
-        self.gray = None
-
-    def process_color(self):
-        # 如果 self.color 为空，直接返回
-        if self.color is None:
-            self.gray = None
-            return
-
-        # 将 BGR 图像转换为 HLS 模型
-        hls_image = cv2.cvtColor(self.color, cv2.COLOR_BGR2HLS)
-        # 提取 L 通道 (亮度) 作为灰度图
-        self.gray = hls_image[:, :, 1]  # L 通道为 HLS 的第二个通道 (索引 1)
-        self.hls = hls_image
-
-
-# 血量窗口
-class BloodWindow(GrayWindow):
-    def __init__(self, sx, sy, ex, ey, blood_gray_min=117, blood_gray_max=255):
-        super().__init__(sx, sy, ex, ey)
-        self.blood_gray_min = blood_gray_min
-        self.blood_gray_max = blood_gray_max
-
-    def process_color(self):
-        super().process_color()
-        if self.gray is not None:
-            middle_row = self.gray[self.gray.shape[0] // 2, :]
-            clipped = np.clip(middle_row, self.blood_gray_min, self.blood_gray_max)
-            count = np.count_nonzero(clipped == middle_row)
-            total_length = len(middle_row)
-            self.status = (count / total_length) * 100
-
-
-# 血量窗口 挨打会闪烁红色
-class BloodWindowV2(HLSWindow):
-    def __init__(self, sx, sy, ex, ey, blood_gray_min=117, blood_gray_max=255):
-        super().__init__(sx, sy, ex, ey)
-        self.blood_gray_min = blood_gray_min
-        self.blood_gray_max = blood_gray_max
-        self.last_status = None  # 上一次的血量状态
-
-    def is_color_red(self):
-        """通过中间一行的 H 通道检测是否偏红"""
-        if self.hls is None:
-            return False
-
-        # 采样 hls 图像的中间一行
-        middle_row_hls = self.hls[self.hls.shape[0] // 2, :, :]
-
-        # 提取 H 通道
-        h_channel = middle_row_hls[:, 0]
-
-        # 红色在 H 通道中的范围：0-15 和 165-180
-        red_mask_1 = (h_channel >= 0) & (h_channel <= 15)
-        red_mask_2 = (h_channel >= 165) & (h_channel <= 180)
-        red_mask = red_mask_1 | red_mask_2
-
-        # 计算红色像素的比例
-        red_percentage = np.sum(red_mask) / len(h_channel)
-
-        # 如果中间一行有超过 40% 的像素是红色，则判断为偏红
-        return red_percentage > 0.4
-
-    def process_color(self):
-        super().process_color()
-        if self.gray is not None:
-            # 检测是否整体偏红
-            is_red = self.is_color_red()
-
-            # 采样中间一行用于血量检测
-            middle_row = self.gray[self.gray.shape[0] // 2, :]
-            clipped = np.clip(middle_row, self.blood_gray_min, self.blood_gray_max)
-            count = np.count_nonzero(clipped == middle_row)
-            total_length = len(middle_row)
-            new_status = (count / total_length) * 100  # 计算新的血量百分比
-
-            if is_red:
-                # 如果整体偏红，只允许血量下降
-                if self.last_status is None or new_status < self.last_status:
-                    self.status = new_status
+            # 尝试提取数值
+            if text:
+                # 使用正则表达式提取数字
+                number_match = re.search(r'\d+(\.\d+)?', text)
+                if number_match:
+                    self.value = float(number_match.group())
+                    # 确保值在设定范围内
+                    self.value = max(self.min_value, min(self.max_value, self.value))
+                    # 计算百分比状态
+                    if self.max_value > self.min_value:
+                        self.status = (self.value - self.min_value) / (self.max_value - self.min_value)
+                    else:
+                        self.status = 0
                 else:
-                    self.status = self.last_status  # 保持上一次的状态
+                    self.value = 0
+                    self.status = 0
             else:
-                # 正常更新状态
-                self.status = new_status
+                self.value = 0
+                self.status = 0
+        except Exception as e:
+            print(f"OCR Error: {e}")
+            self.value = 0
+            self.status = 0
 
-            # 更新 last_status
-            self.last_status = self.status
+    def get_value(self):
+        return self.value
+
+    def __repr__(self):
+        return f"NumberWindow(value={self.value}, status={self.status:.2f}, sx={self.sx}, sy={self.sy}, ex={self.ex}, ey={self.ey})"
 
 
-# 技能窗口
-class SkillWindow(HLSWindow):
-    def __init__(self, sx, sy, ex, ey, skill_gray_min=90, skill_gray_max=160):
+# 时间窗口类，用于扫描窗口中的hh:mm格式时间
+class TimeWindow(NumberWindow):
+    def __init__(self, sx, sy, ex, ey):
+        # 调用父类构造函数，但不使用min_value和max_value
         super().__init__(sx, sy, ex, ey)
-        self.skill_gray_min = skill_gray_min
-        self.skill_gray_max = skill_gray_max
+        self.hours = 0
+        self.minutes = 0
+        self.total_minutes = 0
+        # 一天的总分钟数作为最大值用于计算状态
+        self.max_minutes = 24 * 60
 
     def process_color(self):
-        super().process_color()
-        if self.gray is not None:
-            avg_gray = np.mean(self.gray)
-            self.status = (
-                1 if self.skill_gray_min <= avg_gray <= self.skill_gray_max else 0
-            )
+        # 转换为灰度图
+        self.gray = cv2.cvtColor(self.color, cv2.COLOR_BGR2GRAY)
 
+        # 对图像进行预处理以提高OCR精度
+        _, binary = cv2.threshold(self.gray, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
 
-# 其他窗口可继承 BloodWindow 或 SkillWindow
-class MagicWindow(BloodWindow):
-    def __init__(self, sx, sy, ex, ey):
-        super().__init__(sx, sy, ex, ey, blood_gray_min=80, blood_gray_max=120)
+        # 使用pytesseract进行OCR识别
+        try:
+            # 配置pytesseract识别时间格式
+            custom_config = r'--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789:'
+            text = pytesseract.image_to_string(binary, config=custom_config).strip()
 
+            # 使用正则表达式匹配hh:mm格式
+            time_match = re.search(r'(\d{1,2}):(\d{2})', text)
+            if time_match:
+                self.hours = int(time_match.group(1))
+                self.minutes = int(time_match.group(2))
 
-class EnergyWindow(BloodWindow):
-    def __init__(self, sx, sy, ex, ey):
-        super().__init__(sx, sy, ex, ey, blood_gray_min=135, blood_gray_max=165)
+                # 验证时间有效性
+                if 0 <= self.hours <= 23 and 0 <= self.minutes <= 59:
+                    # 计算总分钟数
+                    self.total_minutes = self.hours * 60 + self.minutes
+                    # 计算状态（一天中的百分比）
+                    self.status = self.total_minutes / self.max_minutes
+                else:
+                    self.hours = 0
+                    self.minutes = 0
+                    self.total_minutes = 0
+                    self.status = 0
+            else:
+                self.hours = 0
+                self.minutes = 0
+                self.total_minutes = 0
+                self.status = 0
+        except Exception as e:
+            print(f"Time OCR Error: {e}")
+            self.hours = 0
+            self.minutes = 0
+            self.total_minutes = 0
+            self.status = 0
 
+    def get_time_string(self):
+        """返回hh:mm格式的时间字符串"""
+        return f"{self.hours:02d}:{self.minutes:02d}"
 
-class SkillTSWindow(SkillWindow):
-    def __init__(self, sx, sy, ex, ey):
-        super().__init__(sx, sy, ex, ey, skill_gray_min=145, skill_gray_max=190)
+    def get_total_minutes(self):
+        """返回从0点开始的总分钟数"""
+        return self.total_minutes
 
-
-class SkillFBWindow(SkillWindow):
-    def __init__(self, sx, sy, ex, ey):
-        super().__init__(sx, sy, ex, ey, skill_gray_min=145, skill_gray_max=190)
-
-
-class GunShiWindow(SkillWindow):
-    def __init__(self, sx, sy, ex, ey):
-        super().__init__(sx, sy, ex, ey, skill_gray_min=210, skill_gray_max=255)
-
-
-class HuluWindow(GrayWindow):
-    def __init__(self, sx, sy, ex, ey, hulu_gray_min=120, hulu_gray_max=255):
-        super().__init__(sx, sy, ex, ey)
-        self.hulu_gray_min = hulu_gray_min
-        self.hulu_gray_max = hulu_gray_max
-
-    def process_color(self):
-        super().process_color()
-        if self.gray is not None:
-            middle_col_1 = self.gray[:, self.gray.shape[1] // 3]
-            middle_col_2 = self.gray[:, 2 * self.gray.shape[1] // 3]
-            clipped_col_1 = np.clip(
-                middle_col_1, self.hulu_gray_min, self.hulu_gray_max
-            )
-            clipped_col_2 = np.clip(
-                middle_col_2, self.hulu_gray_min, self.hulu_gray_max
-            )
-            count_1 = np.count_nonzero(clipped_col_1 == middle_col_1)
-            count_2 = np.count_nonzero(clipped_col_2 == middle_col_2)
-            total_length = len(middle_col_1)
-            self.status = ((count_1 + count_2) / (2 * total_length)) * 100
+    def __repr__(self):
+        return f"TimeWindow(time={self.get_time_string()}, minutes={self.total_minutes}, status={self.status:.2f}, sx={self.sx}, sy={self.sy}, ex={self.ex}, ey={self.ey})"
 
 
 # 查找logo位置的函数
@@ -349,7 +270,7 @@ def set_windows_offset(frame):
 
         # 根据logo图片再title bar的位置修正
         # offset_x += 10 # 不需要，已经校正窗口位置了
-        offset_y += 30
+        offset_y += 45
 
         # 设置偏移量给所有窗口对象
         BaseWindow.set_offset(offset_x, offset_y)
@@ -374,6 +295,8 @@ base_height = 1080 # 勿动
 width_scale = game_width / base_width
 height_scale = game_height / base_height
 
+print(f"width_scale: {width_scale}, height_scale: {height_scale}")
+
 
 # 坐标转换函数
 def convert_coordinates(x1, y1, x2, y2):
@@ -387,36 +310,14 @@ def convert_coordinates(x1, y1, x2, y2):
 
 game_window = BaseWindow(0, 0, game_width, game_height)
 # 转换后的窗口坐标
-# self_blood_window = BloodWindow(*convert_coordinates(138, 655, 345, 664))
-# self_magic_window = MagicWindow(*convert_coordinates(141, 669, 366, 675))
-# self_energy_window = EnergyWindow(*convert_coordinates(140, 678, 352, 682))
 
 # 根据游戏调整
-self_speed_window = NumericStatusWindow(*convert_coordinates(1155, 539, 1220, 555))
-self_distance_window = NumericStatusWindow(*convert_coordinates(1020, 556, 1070, 570))
-self_time_window = NumericStatusWindow(1100, 556, 1140, 570)
-# self_energy_window = EnergyWindow(*convert_coordinates(140, 678, 234, 682))
-#
-# skill_1_window = SkillWindow(*convert_coordinates(1110, 571, 1120, 580))
-# skill_2_window = SkillWindow(*convert_coordinates(1147, 571, 1156, 580))
-# skill_3_window = SkillWindow(*convert_coordinates(1184, 571, 1193, 580))
-# skill_4_window = SkillWindow(*convert_coordinates(1221, 571, 1230, 580))
-#
-# skill_ts_window = SkillTSWindow(*convert_coordinates(995, 694, 1005, 703))
-# skill_fb_window = SkillFBWindow(*convert_coordinates(1061, 694, 1071, 703))
-#
-# gunshi1_window = GunShiWindow(*convert_coordinates(1191, 691, 1198, 697))
-# gunshi2_window = GunShiWindow(*convert_coordinates(1205, 681, 1211, 686))
-# gunshi3_window = GunShiWindow(*convert_coordinates(1211, 663, 1219, 671))
-#
-# hulu_window = HuluWindow(*convert_coordinates(82, 645, 88, 679))
-#
-# q_window = SkillWindow(*convert_coordinates(185, 542, 195, 551))
+self_speed_window = NumberWindow(*convert_coordinates(1486, 706, 1509, 729))
+self_distance_window = NumberWindow(*convert_coordinates(1591, 739, 1623, 755))
+self_time_window = TimeWindow(1830, 707, 1884, 726)
 
-# roi_x_size = 300  # ROI的宽度和高度（以游戏窗口中心为中心的矩形）
-# roi_y_size = 400  # ROI的宽度和高度（以游戏窗口中心为中心的矩形）
-roi_x_size = 400  # ROI的宽度和高度（以游戏窗口中心为中心的矩形）
-roi_y_size = 500  # ROI的宽度和高度（以游戏窗口中心为中心的矩形）
+roi_x_size = 1000  # ROI的宽度和高度（以游戏窗口中心为中心的矩形）
+roi_y_size = 1200  # ROI的宽度和高度（以游戏窗口中心为中心的矩形）
 start_xy = (
     game_width // 2 - roi_x_size // 2,
     game_height // 2 - roi_y_size // 2 - 100,
