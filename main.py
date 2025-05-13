@@ -44,6 +44,7 @@ key_press_interval = 0.1  # seconds
 
 
 # Screen regions for detection
+# 需要修改检测数据状况，右下角
 class TruckDashboard(BaseWindow):
     def __init__(self, sx, sy, ex, ey):
         super().__init__(sx, sy, ex, ey)

@@ -336,12 +336,11 @@ def set_windows_offset(frame):
 
 
 # 实际游戏窗口大小
-game_width = 1280  # NOTE: 替换成你游戏的宽度和分辨率
+game_width = 1920  # NOTE: 替换成你游戏的宽度和分辨率
 game_height = round(game_width * 0.5625)
 
-# 基准窗口大小: 勿动，否则需要连同下方所有数值一起做修改
-base_width = 1280 # 勿动
-base_height = 720 # 勿动
+base_width = 1920 # 勿动
+base_height = 1080 # 勿动
 
 # 计算缩放因子
 width_scale = game_width / base_width
@@ -383,12 +382,6 @@ gunshi3_window = GunShiWindow(*convert_coordinates(1211, 663, 1219, 671))
 hulu_window = HuluWindow(*convert_coordinates(82, 645, 88, 679))
 
 q_window = SkillWindow(*convert_coordinates(185, 542, 195, 551))
-
-# boss_blood_window = BloodWindow(*convert_coordinates(512, 609, 776, 616)) # 寅虎
-# boss_blood_window = BloodWindow(*convert_coordinates(460, 609, 836, 616)) # 虎先锋
-# boss_blood_window = BloodWindow(*convert_coordinates(510, 609, 776, 616)) # 广谋
-# boss_blood_window = BloodWindow(*convert_coordinates(455, 609, 836, 616)) # 青背龙
-boss_blood_window = BloodWindow(*convert_coordinates(510, 609, 780, 616)) # 大头
 
 # roi_x_size = 300  # ROI的宽度和高度（以游戏窗口中心为中心的矩形）
 # roi_y_size = 400  # ROI的宽度和高度（以游戏窗口中心为中心的矩形）
