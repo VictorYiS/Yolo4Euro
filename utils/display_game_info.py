@@ -1,13 +1,10 @@
-import cv2
-import time
-from window import *
-import grabscreen
 import signal
-import sys
-import hashlib
-import colorsys
+import time
 import tkinter as tk
+
+import grabscreen
 import utils.change_window as change_window
+from window import *
 
 # 标志位，表示是否继续运行
 running = True
@@ -183,7 +180,7 @@ if __name__ == "__main__":
 
     change_window.correction_window()
 
-    if check_window_resolution_same(game_width, game_height) == False:
+    if change_window.check_window_resolution_same(game_width, game_height) == False:
         raise ValueError(
             f"游戏分辨率和配置game_width({game_width}), game_height({game_height})不一致，请到window.py中修改"
         )

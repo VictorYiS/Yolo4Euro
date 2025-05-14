@@ -4,8 +4,6 @@ import re
 import cv2
 import numpy as np
 import pytesseract
-import utils
-from utils.change_window import check_window_resolution_same
 
 
 # 基类，封装静态 offset 和 frame
@@ -117,7 +115,7 @@ class StatusWindow(BaseWindow):
         return self.status
 
 
-# 数值窗口类，用于扫描窗口中的数值大小
+# 数值窗口类，直接返回识别的实际数值
 class NumberWindow(StatusWindow):
     def __init__(self, sx, sy, ex, ey, min_value=0, max_value=100):
         super().__init__(sx, sy, ex, ey)
@@ -127,101 +125,162 @@ class NumberWindow(StatusWindow):
         self.gray = None
 
     def process_color(self):
+        if self.color is None:
+            self.value = 0
+            self.status = 0  # 保留status属性，但不再用于百分比
+            return
+
         # 转换为灰度图
         self.gray = cv2.cvtColor(self.color, cv2.COLOR_BGR2GRAY)
 
-        # 对图像进行预处理以提高OCR精度
-        _, binary = cv2.threshold(self.gray, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+        # 增强预处理步骤
+        resized = cv2.resize(self.gray, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+        binary = cv2.adaptiveThreshold(resized, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                       cv2.THRESH_BINARY_INV, 11, 2)
+        kernel = np.ones((2, 2), np.uint8)
+        binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
 
-        # 使用pytesseract进行OCR识别
         try:
-            # 配置pytesseract只识别数字
-            custom_config = r'--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789.'
+            custom_config = r'--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789.'
             text = pytesseract.image_to_string(binary, config=custom_config).strip()
 
-            # 尝试提取数值
-            if text:
-                # 使用正则表达式提取数字
-                number_match = re.search(r'\d+(\.\d+)?', text)
-                if number_match:
-                    self.value = float(number_match.group())
-                    # 确保值在设定范围内
+            numbers = re.findall(r'\d+(?:\.\d+)?', text)
+            if numbers:
+                # 如果找到多个数字，选择最长的那个
+                longest_num = max(numbers, key=len)
+                try:
+                    self.value = float(longest_num)
+                    # 仍然可以应用范围限制
                     self.value = max(self.min_value, min(self.max_value, self.value))
-                    # 计算百分比状态
-                    if self.max_value > self.min_value:
-                        self.status = (self.value - self.min_value) / (self.max_value - self.min_value)
-                    else:
-                        self.status = 0
-                else:
+                    # 直接将识别到的数值赋给status
+                    self.status = self.value
+                except ValueError:
                     self.value = 0
                     self.status = 0
             else:
                 self.value = 0
                 self.status = 0
+
+            # 如果识别结果不可靠，尝试备选方法
+            if self.value == 0 and self.min_value > 0:
+                self._try_template_matching()
+
         except Exception as e:
             print(f"OCR Error: {e}")
             self.value = 0
             self.status = 0
 
+    def _try_template_matching(self):
+        """尝试使用模板匹配识别数字"""
+        # 这里可以实现简单的数字模板匹配逻辑
+        pass
+
     def get_value(self):
         return self.value
 
+    def get_status(self):
+        # 重写父类方法，直接返回识别的数值
+        return self.value
+
     def __repr__(self):
-        return f"NumberWindow(value={self.value}, status={self.status:.2f}, sx={self.sx}, sy={self.sy}, ex={self.ex}, ey={self.ey})"
+        return f"NumberWindow(value={self.value})"
 
 
-# 时间窗口类，用于扫描窗口中的hh:mm格式时间
+# 时间窗口类，直接返回识别的时间值
 class TimeWindow(NumberWindow):
     def __init__(self, sx, sy, ex, ey):
-        # 调用父类构造函数，但不使用min_value和max_value
         super().__init__(sx, sy, ex, ey)
         self.hours = 0
         self.minutes = 0
         self.total_minutes = 0
-        # 一天的总分钟数作为最大值用于计算状态
-        self.max_minutes = 24 * 60
 
     def process_color(self):
+        if self.color is None:
+            self.reset_time()
+            return
+
         # 转换为灰度图
         self.gray = cv2.cvtColor(self.color, cv2.COLOR_BGR2GRAY)
 
-        # 对图像进行预处理以提高OCR精度
-        _, binary = cv2.threshold(self.gray, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+        # 时间识别增强预处理
+        resized = cv2.resize(self.gray, None, fx=2.5, fy=2.5, interpolation=cv2.INTER_CUBIC)
+        kernel = np.array([[-1, -1, -1], [-1, 9, -1], [-1, -1, -1]])
+        sharpened = cv2.filter2D(resized, -1, kernel)
+        _, binary = cv2.threshold(sharpened, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        kernel = np.ones((2, 2), np.uint8)
+        binary = cv2.dilate(binary, kernel, iterations=1)
 
-        # 使用pytesseract进行OCR识别
         try:
-            # 配置pytesseract识别时间格式
-            custom_config = r'--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789:'
+            custom_config = r'--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789: '
             text = pytesseract.image_to_string(binary, config=custom_config).strip()
 
-            # 使用正则表达式匹配hh:mm格式
-            time_match = re.search(r'(\d{1,2}):(\d{2})', text)
+            time_match = re.search(r'(\d{1,2})\s*:\s*(\d{2})', text)
+
+            if not time_match:
+                text = re.sub(r'\s+', '', text)  # 移除所有空格
+                time_match = re.search(r'(\d{1,2}):(\d{2})', text)
+
             if time_match:
                 self.hours = int(time_match.group(1))
                 self.minutes = int(time_match.group(2))
 
                 # 验证时间有效性
                 if 0 <= self.hours <= 23 and 0 <= self.minutes <= 59:
-                    # 计算总分钟数
-                    self.total_minutes = self.hours * 60 + self.minutes
-                    # 计算状态（一天中的百分比）
-                    self.status = self.total_minutes / self.max_minutes
+                    self.update_time_values()
                 else:
-                    self.hours = 0
-                    self.minutes = 0
-                    self.total_minutes = 0
-                    self.status = 0
+                    self.reset_time()
             else:
-                self.hours = 0
-                self.minutes = 0
-                self.total_minutes = 0
-                self.status = 0
+                # 如果正则匹配失败，尝试分别识别小时和分钟
+                self._try_separate_recognition(binary)
         except Exception as e:
             print(f"Time OCR Error: {e}")
-            self.hours = 0
-            self.minutes = 0
-            self.total_minutes = 0
-            self.status = 0
+            self.reset_time()
+
+    def _try_separate_recognition(self, binary):
+        """尝试分别识别小时和分钟部分"""
+        height, width = binary.shape
+
+        # 分割图像为左右两部分
+        left_half = binary[:, :width // 2]
+        right_half = binary[:, width // 2:]
+
+        try:
+            left_config = r'--oem 3 --psm 10 -c tessedit_char_whitelist=0123456789'
+            hours_text = pytesseract.image_to_string(left_half, config=left_config).strip()
+            hours_match = re.search(r'(\d{1,2})', hours_text)
+
+            right_config = r'--oem 3 --psm 10 -c tessedit_char_whitelist=0123456789'
+            minutes_text = pytesseract.image_to_string(right_half, config=right_config).strip()
+            minutes_match = re.search(r'(\d{1,2})', minutes_text)
+
+            if hours_match and minutes_match:
+                self.hours = int(hours_match.group(1))
+                self.minutes = int(minutes_match.group(1))
+
+                # 验证时间有效性
+                if 0 <= self.hours <= 23 and 0 <= self.minutes <= 59:
+                    self.update_time_values()
+                else:
+                    self.reset_time()
+            else:
+                self.reset_time()
+        except Exception:
+            self.reset_time()
+
+    def reset_time(self):
+        """重置时间相关属性"""
+        self.hours = 0
+        self.minutes = 0
+        self.total_minutes = 0
+        self.status = 0
+        self.value = 0
+
+    def update_time_values(self):
+        """更新总分钟数和状态值"""
+        self.total_minutes = self.hours * 60 + self.minutes
+        # 设置status和value均为总分钟数
+        self.status = self.total_minutes
+        self.value = self.total_minutes
 
     def get_time_string(self):
         """返回hh:mm格式的时间字符串"""
@@ -231,8 +290,16 @@ class TimeWindow(NumberWindow):
         """返回从0点开始的总分钟数"""
         return self.total_minutes
 
+    def get_value(self):
+        # 重写父类方法，返回总分钟数
+        return self.total_minutes
+
+    def get_status(self):
+        # 重写父类方法，返回总分钟数
+        return self.total_minutes
+
     def __repr__(self):
-        return f"TimeWindow(time={self.get_time_string()}, minutes={self.total_minutes}, status={self.status:.2f}, sx={self.sx}, sy={self.sy}, ex={self.ex}, ey={self.ey})"
+        return f"TimeWindow(time={self.get_time_string()}, minutes={self.total_minutes})"
 
 
 # 查找logo位置的函数
@@ -269,7 +336,7 @@ def set_windows_offset(frame):
         offset_x, offset_y = logo_position
 
         # 根据logo图片再title bar的位置修正
-        # offset_x += 10 # 不需要，已经校正窗口位置了
+        offset_x += 5 # 不需要，已经校正窗口位置了
         offset_y += 45
 
         # 设置偏移量给所有窗口对象
@@ -312,9 +379,9 @@ game_window = BaseWindow(0, 0, game_width, game_height)
 # 转换后的窗口坐标
 
 # 根据游戏调整
-self_speed_window = NumberWindow(*convert_coordinates(1486, 706, 1509, 729))
-self_distance_window = NumberWindow(*convert_coordinates(1591, 739, 1623, 755))
-self_time_window = TimeWindow(1830, 707, 1884, 726)
+self_speed_window = NumberWindow(*convert_coordinates(1486, 706, 1513, 729))
+self_distance_window = NumberWindow(*convert_coordinates(1585, 739, 1620, 757))
+self_time_window = TimeWindow(1831, 707, 1884, 727)
 
 roi_x_size = 1000  # ROI的宽度和高度（以游戏窗口中心为中心的矩形）
 roi_y_size = 1200  # ROI的宽度和高度（以游戏窗口中心为中心的矩形）
