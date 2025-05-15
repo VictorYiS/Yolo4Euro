@@ -69,7 +69,7 @@ class KeyController:
         try:
             if key.char == 'z':
                 # Toggle autodrive
-                self.drive_mode_toggle()
+                self.truck_controller.drive_mode_toggle()
                 log.info(f"AutoDrive {'activated' if self.truck_controller.get_drive_status() else 'deactivated'}")
             elif key.char == 'x':
                 # Emergency stop
@@ -84,7 +84,7 @@ class KeyController:
                 return False  # Stop listener
         except AttributeError:
             # Special key handling
-            pass
+            log.error(f"Special key pressed error: {key}, {traceback.format_exc()}")
 
         return True  # Continue listening
 
@@ -107,8 +107,8 @@ class KeyController:
 
 
 class ProcessingManager:
-    def __init__(self, dashborad, running_event):
-        self.dashborad = dashborad
+    def __init__(self, shared_data, running_event):
+        self.shared_data = shared_data
         self.running_event = running_event
 
         # 初始化队列
@@ -130,17 +130,14 @@ class ProcessingManager:
             self.normal_queue,
             self.kb_controller
         )
-        self.action_executor.start()
 
     def _initialize_controller(self):
         return TruckController()
 
-
     def get_current_state(self):
         """获取当前状态"""
-        status = self.dashborad.get_frame_and_status()
-        # 待实现需要进行的转换，先原封输出
-        return status
+        # 从共享数据结构中读取状态
+        return dict(self.shared_data)
 
     def clear_event_queues(self):
         """清空事件队列"""
@@ -149,15 +146,12 @@ class ProcessingManager:
 
     def handle_action_execution(self, action):
         """处理动作执行和事件监控，需要继续改造"""
-
-        while self.self.action_executor.is_alive():
-            time.sleep(0.001)
-            self._handle_normal_events(action)
-
+        self._handle_normal_events(action)
 
     def run(self):
         """主运行循环"""
         try:
+            self.action_executor.start()
             while self.running_event.is_set():
                 if self.running_mode.is_set():
                     self._normal_running()
@@ -179,7 +173,7 @@ class ProcessingManager:
         if self.truck_controller.get_drive_status():
             status = self.get_current_state()
             action = None
-            if status['detect_frame'] is not None:
+            if status.get('detect_frame') is not None:
                 # 处理图像和状态
                 action = self.truck_controller.get_action(status)
             if action:
@@ -190,7 +184,7 @@ class ProcessingManager:
         self.normal_queue.put(action)
 
 
-def process(dashboard, running_event):
+def process(shared_data, running_event):
     """主入口函数"""
-    manager = ProcessingManager(dashboard, running_event)
+    manager = ProcessingManager(shared_data, running_event)
     manager.run()

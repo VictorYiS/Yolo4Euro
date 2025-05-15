@@ -12,7 +12,7 @@ class TruckDashboard:
         self.time = 0
         # self.gear = 0
         self.fuel = 100.0
-        self.yolo_detector = YOLODetector("runs/detect/kitti_yolo11/weights/best.pt")
+        self.yolo_detector = YOLODetector("runs/detect/kitti_yolo11/weights/best_light.pt")
         self.lane_mask_detector = LaneDetector()
         self.lane_status = None
         self.objects = []

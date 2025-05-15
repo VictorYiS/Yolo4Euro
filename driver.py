@@ -2,7 +2,7 @@ from log import log
 
 class TruckController():
     def __init__(self):
-        self.autodrive_active = True
+        self.autodrive_active = False
         print("TruckController initialized")
 
     def get_drive_status(self):
