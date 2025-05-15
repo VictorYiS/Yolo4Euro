@@ -1,27 +1,21 @@
+import os
+import time
 from datetime import datetime
 
-from ultralytics import YOLO
-
-from window import BaseWindow
 import cv2
 import numpy as np
-import time
 import torch
-import os
-import logging
-
-# Import your UNet class
+from ultralytics import YOLO
+from log import log
 from road_lane_segmentation import UNet
 
 
-class RoadDetector(BaseWindow):
-    def __init__(self, sx, sy, ex, ey, model_path="models/lane_detection_model.pth", log=None):
-        super().__init__(sx, sy, ex, ey)
+class RoadDetector():
+    def __init__(self, model_path="models/lane_detection_model.pth"):
         self.lane_center = 0.0  # Position of lane center relative to screen center
         self.road_visible = False
         self.obstacle_detected = False
         self.distance_to_obstacle = 100.0  # meters
-        self.log = log if log is not None else logging.getLogger("RoadDetector")
         self.lane_mask = None
         self._lane_center_offset = 0.0
         self._lane_curvature = 0.0
@@ -35,79 +29,79 @@ class RoadDetector(BaseWindow):
         self.mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
         self.std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 
-        self.log.debug("RoadDetector initialized with U-Net model")
+        log.debug("RoadDetector initialized with U-Net model")
 
     def load_model(self, model_path):
         """Load the pre-trained U-Net model"""
         try:
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            self.log.debug(f"Using device: {self.device}")
+            log.debug(f"Using device: {self.device}")
 
             # Check if the model file exists
             model_exists = os.path.exists(model_path)
-            self.log.debug(f"Model path: {os.path.abspath(model_path)}, exists: {model_exists}")
+            log.debug(f"Model path: {os.path.abspath(model_path)}, exists: {model_exists}")
 
             # Initialize model
-            self.log.debug("Initializing U-Net model...")
+            log.debug("Initializing U-Net model...")
             try:
                 self.model = UNet(in_channels=3, out_channels=1)
                 self.model.float()  # Explicitly set model to float32
-                self.log.debug("U-Net model initialized")
+                log.debug("U-Net model initialized")
             except Exception as e:
-                self.log.error(f"Failed to initialize U-Net model: {e}")
+                log.error(f"Failed to initialize U-Net model: {e}")
                 self.model = None
                 return
 
             # Load model weights if file exists
             if model_exists:
                 try:
-                    self.log.debug(f"Loading model weights from {model_path}")
+                    log.debug(f"Loading model weights from {model_path}")
                     # Try loading with map_location first
                     checkpoint = torch.load(model_path, map_location=self.device)
-                    self.log.debug(
+                    log.debug(
                         f"Checkpoint keys: {checkpoint.keys() if isinstance(checkpoint, dict) else 'not a dict'}")
 
                     if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
                         self.model.load_state_dict(checkpoint['model_state_dict'])
-                        self.log.debug("Loaded model weights from 'model_state_dict'")
+                        log.debug("Loaded model weights from 'model_state_dict'")
                     elif isinstance(checkpoint, dict):
                         # Maybe it's just the state dict directly
                         self.model.load_state_dict(checkpoint)
-                        self.log.debug("Loaded model weights directly from checkpoint")
+                        log.debug("Loaded model weights directly from checkpoint")
                     else:
-                        self.log.error("Checkpoint is not a valid format")
+                        log.error("Checkpoint is not a valid format")
                         # Continue with random weights
 
                     self.model = self.model.to(self.device)
                     self.model.eval()  # Set model to evaluation mode
-                    self.log.debug(f"Successfully loaded model from {model_path}")
+                    log.debug(f"Successfully loaded model from {model_path}")
                 except Exception as e:
-                    self.log.error(f"Error loading model state dict: {e}", exc_info=True)
-                    self.log.debug("Using model with random weights")
+                    log.error(f"Error loading model state dict: {e}", exc_info=True)
+                    log.debug("Using model with random weights")
                     # Continue with random weights
                     self.model = self.model.to(self.device)
                     self.model.eval()
             else:
-                self.log.warning(f"Model file not found at {model_path}")
-                self.log.debug("Using model with random weights")
+                log.warning(f"Model file not found at {model_path}")
+                log.debug("Using model with random weights")
                 # Continue with random weights
                 self.model = self.model.to(self.device)
                 self.model.eval()
 
             # Test the model with a dummy input to see if it works
             try:
-                self.log.debug("Testing model with dummy input...")
+                log.debug("Testing model with dummy input...")
                 dummy_input = torch.randn(1, 3, 256, 512).to(self.device)
                 with torch.no_grad():
                     dummy_output = self.model(dummy_input)
-                self.log.debug(f"Dummy output shape: {dummy_output.shape}")
-                self.log.debug("Model test successful")
+                log.debug(f"Dummy output shape: {dummy_output.shape}")
+                log.debug("Model test successful")
             except Exception as e:
-                self.log.error(f"Model test failed: {e}", exc_info=True)
+                log.error(f"Model test failed: {e}", exc_info=True)
                 self.model = None
 
         except Exception as e:
-            self.log.error(f"Error in load_model: {e}", exc_info=True)
+            log.error(f"Error in load_model: {e}", exc_info=True)
             self.model = None
 
     def preprocess_image(self, image):
@@ -131,14 +125,14 @@ class RoadDetector(BaseWindow):
 
             return input_tensor
         except Exception as e:
-            self.log.error(f"Error preprocessing image: {e}")
+            log.error(f"Error preprocessing image: {e}")
             return None
 
-    def _use_color_based_detection(self):
+    def _use_color_based_detection(self, frame):
         """Fallback method using color thresholding for lane detection"""
         try:
             # Convert to your preferred color space
-            hsv = cv2.cvtColor(self.color, cv2.COLOR_BGR2HSV)
+            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
             # In EuroTruck, road lanes can be white, yellow, or even gray
             # Values for white lines (more permissive)
@@ -186,41 +180,41 @@ class RoadDetector(BaseWindow):
                     # Apply dilation to connect nearby lines
                     refined_mask = cv2.dilate(refined_mask, kernel, iterations=2)
                     self.lane_mask = refined_mask
-                    self.log.debug(f"Lane detection with Hough transform: {len(lines)} lines detected")
+                    log.debug(f"Lane detection with Hough transform: {len(lines)} lines detected")
                 else:
                     # Fallback to the combined mask if no lines detected
                     self.lane_mask = combined_mask
-                    self.log.debug("No lines detected with Hough transform, using combined mask")
+                    log.debug("No lines detected with Hough transform, using combined mask")
             except Exception as e:
-                self.log.error(f"Error in Hough transform: {e}")
+                log.error(f"Error in Hough transform: {e}")
                 # Fallback to the combined mask
                 self.lane_mask = combined_mask
 
             # Count lane pixels for debugging
             lane_pixels = np.sum(self.lane_mask > 0)
             total_pixels = self.lane_mask.size
-            self.log.debug(
+            log.debug(
                 f"Color-based lane detection: {lane_pixels}/{total_pixels} pixels ({lane_pixels / total_pixels * 100:.2f}%)")
         except Exception as e:
-            self.log.error(f"Error in color-based lane detection: {e}")
+            log.error(f"Error in color-based lane detection: {e}")
             self.lane_mask = None
 
-    def process_data(self):
+    def process_data(self, frame):
         """Process road view to detect lanes"""
-        if self.color is None:
-            self.log.debug("No color data available")
+        if frame is None:
+            log.debug("No color data available")
             return
 
         try:
             # For debugging, log the color data dimensions
-            self.log.debug(f"Processing color data with shape: {self.color.shape}")
+            log.debug(f"Processing color data with shape: {frame.shape}")
 
             # Try U-Net model first
             if self.model is not None:
                 try:
-                    self.log.debug("Attempting to use U-Net model")
+                    log.debug("Attempting to use U-Net model")
                     # Create a preprocessed input for the model
-                    input_tensor = self.preprocess_image(self.color)
+                    input_tensor = self.preprocess_image(frame)
 
                     if input_tensor is not None:
                         # Run inference
@@ -233,17 +227,17 @@ class RoadDetector(BaseWindow):
                         self.lane_mask = (prediction > 0.5).astype(np.uint8) * 255
 
                         # Resize to original frame size
-                        self.lane_mask = cv2.resize(self.lane_mask, (self.color.shape[1], self.color.shape[0]))
-                        self.log.debug(f"U-Net lane detection completed, mask shape: {self.lane_mask.shape}")
+                        self.lane_mask = cv2.resize(self.lane_mask, (frame.shape[1], frame.shape[0]))
+                        log.debug(f"U-Net lane detection completed, mask shape: {self.lane_mask.shape}")
                     else:
-                        self.log.warning("Failed to preprocess image for U-Net")
-                        self._use_color_based_detection()
+                        log.warning("Failed to preprocess image for U-Net")
+                        self._use_color_based_detection(frame)
                 except Exception as e:
-                    self.log.error(f"Error using U-Net model: {e}", exc_info=True)
-                    self._use_color_based_detection()
+                    log.error(f"Error using U-Net model: {e}", exc_info=True)
+                    self._use_color_based_detection(frame)
             else:
-                self.log.debug("No U-Net model available, using color-based detection")
-                self._use_color_based_detection()
+                log.debug("No U-Net model available, using color-based detection")
+                self._use_color_based_detection(frame)
 
             # For debugging, visualize the lane mask
             if self.lane_mask is not None:
@@ -251,7 +245,7 @@ class RoadDetector(BaseWindow):
                 white_pixels = np.sum(self.lane_mask > 0)
                 total_pixels = self.lane_mask.size
                 percentage = (white_pixels / total_pixels) * 100
-                self.log.debug(f"Lane mask statistics: {white_pixels}/{total_pixels} white pixels ({percentage:.2f}%)")
+                log.debug(f"Lane mask statistics: {white_pixels}/{total_pixels} white pixels ({percentage:.2f}%)")
 
                 # Save lane mask for debugging
                 try:
@@ -259,32 +253,32 @@ class RoadDetector(BaseWindow):
                     os.makedirs(debug_dir, exist_ok=True)
                     timestamp = time.strftime("%Y%m%d-%H%M%S")
                     cv2.imwrite(f"{debug_dir}/lane_mask_{timestamp}.jpg", self.lane_mask)
-                    self.log.debug(f"Saved lane mask to {debug_dir}/lane_mask_{timestamp}.jpg")
+                    log.debug(f"Saved lane mask to {debug_dir}/lane_mask_{timestamp}.jpg")
                 except Exception as e:
-                    self.log.error(f"Failed to save debug lane mask: {e}")
+                    log.error(f"Failed to save debug lane mask: {e}")
             else:
-                self.log.warning("No lane mask was generated")
+                log.warning("No lane mask was generated")
 
             # Calculate lane metrics
             self._lane_center_offset = self.get_lane_center_offset()
             self._lane_curvature = self.get_lane_curvature()
             self._is_lane_detected = self.is_lane_detected()
 
-            self.log.debug(f"Lane detection results: detected={self._is_lane_detected}, " +
+            log.debug(f"Lane detection results: detected={self._is_lane_detected}, " +
                            f"offset={self._lane_center_offset:.2f}, curvature={self._lane_curvature:.2f}")
 
         except Exception as e:
-            self.log.error(f"Error in process_data: {e}", exc_info=True)
+            log.error(f"Error in process_data: {e}", exc_info=True)
             self.lane_mask = None
             self._lane_center_offset = 0.0
             self._lane_curvature = 0.0
             self._is_lane_detected = False
 
-    def _use_color_based_detection(self):
+    def _use_color_based_detection(self, frame):
         """Fallback method using color thresholding for lane detection"""
         try:
             # Convert to your preferred color space
-            hsv = cv2.cvtColor(self.color, cv2.COLOR_BGR2HSV)
+            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
             # Adjust these values based on the lane colors in the game
             # Values for white lines
@@ -307,19 +301,19 @@ class RoadDetector(BaseWindow):
             self.lane_mask = cv2.morphologyEx(self.lane_mask, cv2.MORPH_CLOSE, kernel)
             self.lane_mask = cv2.morphologyEx(self.lane_mask, cv2.MORPH_OPEN, kernel)
 
-            self.log.debug("Color-based lane detection applied")
+            log.debug("Color-based lane detection applied")
         except Exception as e:
-            self.log.error(f"Error in color-based lane detection: {e}")
+            log.error(f"Error in color-based lane detection: {e}")
             self.lane_mask = None
 
-    def create_visualization(self):
+    def create_visualization(self, frame):
         """Create a visualization of the lane detection for debugging"""
-        if self.color is None or self.lane_mask is None:
+        if frame is None or self.lane_mask is None:
             return None
 
         try:
             # Create a colored overlay for visualization
-            vis_frame = self.color.copy()
+            vis_frame = frame.copy()
             lane_overlay = np.zeros_like(vis_frame)
             lane_overlay[:, :, 1] = self.lane_mask  # Green channel
 
@@ -337,7 +331,7 @@ class RoadDetector(BaseWindow):
 
             return vis_frame
         except Exception as e:
-            self.log.error(f"Error creating visualization: {e}")
+            log.error(f"Error creating visualization: {e}")
             return None
 
     def get_lane_center_offset(self):
@@ -372,7 +366,7 @@ class RoadDetector(BaseWindow):
 
             return 0.0  # Default: assume centered
         except Exception as e:
-            self.log.error(f"Error calculating lane offset: {e}")
+            log.error(f"Error calculating lane offset: {e}")
             return 0.0
 
     def get_lane_curvature(self):
@@ -420,7 +414,7 @@ class RoadDetector(BaseWindow):
 
             return 0.0  # Default: assume straight road
         except Exception as e:
-            self.log.error(f"Error calculating curvature: {e}")
+            log.error(f"Error calculating curvature: {e}")
             return 0.0
 
     def is_lane_detected(self):
@@ -435,14 +429,14 @@ class RoadDetector(BaseWindow):
                 detected_pixels = np.sum(self.lane_mask > 0)
 
                 # Log actual values for debugging
-                self.log.debug(f"Lane pixels: {detected_pixels}/{self.lane_mask.size}, min required: {min_pixels}")
+                log.debug(f"Lane pixels: {detected_pixels}/{self.lane_mask.size}, min required: {min_pixels}")
 
                 # Consider lane detected if there are enough pixels
                 return detected_pixels > min_pixels
 
             return False
         except Exception as e:
-            self.log.error(f"Error checking lane detection: {e}")
+            log.error(f"Error checking lane detection: {e}")
             return False
 
     def get_drivable_direction(self):
@@ -469,7 +463,7 @@ class RoadDetector(BaseWindow):
 
             return steering_angle
         except Exception as e:
-            self.log.error(f"Error calculating drivable direction: {e}")
+            log.error(f"Error calculating drivable direction: {e}")
             return 0.0
 
     def get_recommended_speed(self):
@@ -490,53 +484,53 @@ class RoadDetector(BaseWindow):
 
             return speed_factor
         except Exception as e:
-            self.log.error(f"Error calculating recommended speed: {e}")
+            log.error(f"Error calculating recommended speed: {e}")
             return 0.5  # Default to moderate speed
 
 
 class YOLODetector:
-    def __init__(self, model_path, log=None):
-        """Initialize YOLO model for object detection"""
+    def __init__(self, model_path):
+        """初始化YOLO模型"""
         self.model = YOLO(model_path)
         self.class_names = self.model.names
         self.last_save_time = 0
-        self.save_interval = 2.0  # Minimum seconds between saved images
-        self.detection_threshold = 0.5  # Confidence threshold
+        self.save_interval = 2.0  # 保存图片的最小间隔(秒)
+        self.detection_threshold = 0.5  # 置信度阈值
 
-        # Create directory for saved detections if it doesn't exist
+        # 创建保存检测结果的目录
         self.save_dir = os.path.join("detections", datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
         os.makedirs(self.save_dir, exist_ok=True)
-        self.log = log
 
-        self.log.debug(f"YOLO model loaded from {model_path}")
-        self.log.debug(f"Available classes: {self.class_names}")
+        log.debug(f"YOLO模型已加载: {model_path}")
+        log.debug(f"可用类别: {self.class_names}")
 
     def detect(self, frame):
-        """Run detection on frame and return results"""
+        """对帧进行目标检测"""
         if frame is None:
             return None
 
-        # Run YOLOv8 inference on the frame
-        results = self.model(frame, conf=self.detection_threshold)
-        return results[0]  # Return first result
+        return self.model(frame, conf=self.detection_threshold)[0]
 
-    def process_detections(self, frame, results):
-        """Process detection results and save image if needed"""
+
+    def process_detections(self, frame, results, roi, lane_mask_detector):
+        """处理检测结果并在需要时保存图像"""
         if results is None or frame is None:
             return [], []
 
-        # Extract detection information
+        # 提取检测信息
         boxes = results.boxes.cpu().numpy()
         detected_objects = []
         detected_classes = []
 
-        # Process each detection
+        # 处理每个检测结果并绘制标签
         for box in boxes:
+            # 提取边界框和类别信息
             x1, y1, x2, y2 = map(int, box.xyxy[0])
             confidence = float(box.conf[0])
             class_id = int(box.cls[0])
             class_name = self.class_names[class_id]
 
+            # 收集检测结果
             detected_objects.append({
                 'bbox': (x1, y1, x2, y2),
                 'confidence': confidence,
@@ -545,101 +539,33 @@ class YOLODetector:
             })
             detected_classes.append(class_name)
 
-            # Draw bounding box on frame
-            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-            label = f"{class_name}: {confidence:.2f}"
-            cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+            # 绘制边界框和标签
+            self._draw_box(frame, x1, y1, x2, y2, class_name, confidence)
 
-        # Save the annotated frame if detections present and enough time has passed
+        # 如有检测结果且间隔足够，保存标注后的帧
         if detected_objects and (time.time() - self.last_save_time) > self.save_interval:
-            self.save_detection(frame, detected_classes)
+            self.save_detection(frame, detected_classes, roi, lane_mask_detector)
             self.last_save_time = time.time()
 
         return detected_objects, detected_classes
 
-    def save_detection(self, frame, detected_classes):
-        """Save the current frame with detection info"""
-        # Create filename with timestamp and detected classes
+    def _draw_box(self, frame, x1, y1, x2, y2, class_name, confidence):
+        """在图像上绘制边界框和标签"""
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        label = f"{class_name}: {confidence:.2f}"
+        cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+
+    def save_detection(self, frame, detected_classes, roi, lane_mask_detector):
+        """保存检测结果和掩码图像（如果提供）"""
+        # 创建带有时间戳和检测类别的基本文件名
         timestamp = datetime.now().strftime("%H-%M-%S")
         classes_str = "_".join(list(set(detected_classes)))
-        filename = f"{timestamp}_{classes_str}.jpg"
-        filepath = os.path.join(self.save_dir, filename)
+        base_filename = f"{timestamp}_{classes_str}"
 
-        # Save the image
-        cv2.imwrite(filepath, frame)
-        self.log.debug(f"Detection saved: {filepath}")
+        # 保存带有检测框的原始图像
+        original_filepath = os.path.join(self.save_dir, f"{base_filename}.jpg")
+        cv2.imwrite(original_filepath, frame)
+        log.debug(f"原始检测结果已保存: {original_filepath}")
 
-
-def visualize_detections_and_lane(log, road_view, frame, detected_objects, lane_mask=None):
-    """Visualize object detections and lane mask for debugging"""
-    try:
-        # Create a copy to avoid modifying the original
-        vis_frame = frame.copy()
-
-        # Draw lane mask if available
-        if lane_mask is not None:
-            # Make sure lane_mask has the same dimensions as frame
-            if lane_mask.shape[:2] != frame.shape[:2]:
-                lane_mask = cv2.resize(lane_mask, (frame.shape[1], frame.shape[0]))
-
-            # Create a colored overlay for the lane mask
-            lane_overlay = np.zeros_like(vis_frame)
-            # Convert to binary mask if it's not already
-            binary_mask = (lane_mask > 0)
-            lane_overlay[binary_mask] = [0, 255, 0]  # Green overlay for lane
-
-            # Blend with original image
-            vis_frame = cv2.addWeighted(vis_frame, 0.7, lane_overlay, 0.3, 0)
-
-        # Draw bounding boxes for detected objects
-        for obj in detected_objects:
-            try:
-                x1, y1, x2, y2 = [int(coord) for coord in obj['bbox']]  # Ensure integer coordinates
-                class_name = obj['class_name']
-                confidence = obj.get('confidence', 0)
-
-                # Different colors for different object types
-                if class_name in ['car', 'truck', 'bus']:
-                    color = (0, 0, 255)  # Red for vehicles
-                elif class_name in ['person', 'bicycle', 'motorcycle']:
-                    color = (255, 0, 0)  # Blue for vulnerable road users
-                else:
-                    color = (255, 255, 0)  # Yellow for other objects
-
-                # Draw bounding box
-                cv2.rectangle(vis_frame, (x1, y1), (x2, y2), color, 2)
-
-                # Draw label
-                label = f"{class_name} {confidence:.2f}"
-                cv2.putText(vis_frame, label, (x1, y1 - 10),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-            except Exception as e:
-                log.error(f"Error drawing bounding box: {e}")
-                continue  # Skip this object and continue with the next
-
-        # Add driving guidance indicators
-        if hasattr(road_view, '_lane_center_offset') and hasattr(road_view,
-                                                                 '_is_lane_detected') and road_view._is_lane_detected:
-            try:
-                height, width = vis_frame.shape[:2]
-                center_x = width // 2
-                center_y = height - 50
-
-                # Draw current position indicator
-                cv2.circle(vis_frame, (center_x, center_y), 10, (0, 0, 255), -1)
-
-                # Draw target position based on lane offset
-                offset_pixels = int(road_view._lane_center_offset * width / 4)
-                target_x = center_x - offset_pixels  # Negative offset means move right
-                cv2.circle(vis_frame, (target_x, center_y), 10, (0, 255, 0), -1)
-
-                # Draw line connecting current and target positions
-                cv2.line(vis_frame, (center_x, center_y), (target_x, center_y), (255, 255, 0), 2)
-            except Exception as e:
-                log.error(f"Error drawing guidance indicators: {e}")
-
-        # Display visualization window
-        cv2.imshow("AutoDrive Visualization", vis_frame)
-        cv2.waitKey(1)
-    except Exception as e:
-        log.error(f"Error in visualization: {e}")
+        lane_mask_detector.process_data(roi)
+        lane_mask_detector.create_visualization(roi)
