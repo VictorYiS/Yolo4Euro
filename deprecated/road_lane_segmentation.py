@@ -432,7 +432,7 @@ def main():
     print("Testing model on sample images...")
     for test_img in test_images:
         test_path = os.path.join(test_dir, test_img)
-        save_path = os.path.join("results", f"result_{test_img}")
+        save_path = os.path.join("../results", f"result_{test_img}")
         test_model(model_save_path, test_path, save_path)
 
     print("Done!")

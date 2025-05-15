@@ -277,7 +277,7 @@ class YOLODetector:
         return self.model(frame, conf=self.detection_threshold)[0]
 
 
-    def process_detections(self, frame, results, roi, lane_mask_detector):
+    def process_detections(self, frame, results):
         """处理检测结果并在需要时保存图像"""
         if results is None or frame is None:
             return [], []
@@ -307,10 +307,10 @@ class YOLODetector:
             # 绘制边界框和标签
             self._draw_box(frame, x1, y1, x2, y2, class_name, confidence)
 
-        # 如有检测结果且间隔足够，保存标注后的帧
-        if detected_objects and (time.time() - self.last_save_time) > self.save_interval:
-            self.save_detection(frame, detected_classes, roi, lane_mask_detector)
-            self.last_save_time = time.time()
+        # # 如有检测结果且间隔足够，保存标注后的帧
+        # if detected_objects and (time.time() - self.last_save_time) > self.save_interval:
+        #     self.save_detection(frame, detected_classes)
+        #     self.last_save_time = time.time()
 
         return detected_objects, detected_classes
 
@@ -320,7 +320,7 @@ class YOLODetector:
         label = f"{class_name}: {confidence:.2f}"
         cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
-    def save_detection(self, frame, detected_classes, roi, lane_mask_detector):
+    def save_detection(self, frame, detected_classes):
         """保存检测结果和掩码图像（如果提供）"""
         try:
             # 创建带有时间戳和检测类别的基本文件名
@@ -332,23 +332,6 @@ class YOLODetector:
             original_filepath = os.path.join(self.save_dir, f"{base_filename}.jpg")
             cv2.imwrite(original_filepath, frame)
             log.debug(f"原始检测结果已保存: {original_filepath}")
-
-            # 处理车道线检测
-            try:
-                # 注意：OpenCV 的 frame 是 BGR 格式，但 PIL 需要 RGB
-                rgb_frame = cv2.cvtColor(roi, cv2.COLOR_BGR2RGB)
-                result = lane_mask_detector.process_image(image_array=rgb_frame)
-
-                # 检查结果是否有效
-                if result and 'lane_image' in result and result['lane_image'] is not None:
-                    # 添加正确的文件扩展名
-                    output_path = os.path.join(self.save_dir, f"lane_{base_filename}.png")
-                    result['lane_image'].save(output_path)
-                    log.debug(f"车道线检测结果已保存: {output_path}")
-                else:
-                    log.warning("车道线检测没有产生有效结果")
-            except Exception as e:
-                log.error(f"车道线检测处理出错: {str(e)}")
 
         except Exception as e:
             log.error(f"保存检测结果时出错: {str(e)}")
