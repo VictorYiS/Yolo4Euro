@@ -4,488 +4,253 @@ from datetime import datetime
 
 import cv2
 import numpy as np
-import torch
+import tensorflow as tf
+from PIL import Image
+from tensorflow.keras.models import load_model
+from tensorflow.keras.models import load_model
 from ultralytics import YOLO
+
 from log import log
-from road_lane_segmentation import UNet
 
 
-class RoadDetector():
-    def __init__(self, model_path="models/lane_detection_model.pth"):
-        self.lane_center = 0.0  # Position of lane center relative to screen center
-        self.road_visible = False
-        self.obstacle_detected = False
-        self.distance_to_obstacle = 100.0  # meters
-        self.lane_mask = None
-        self._lane_center_offset = 0.0
-        self._lane_curvature = 0.0
-        self._is_lane_detected = False
+class LaneDetector:
+    """
+    Lane detection class that uses a U-Net model to detect lane lines in images.
+    """
 
-        # Load the U-Net model
-        self.load_model(model_path)
+    def __init__(self, model_path=None, use_gpu=True):
+        """
+        Initialize the lane detector with a model.
 
-        # Preprocessing parameters for the model
-        self.input_size = (512, 256)  # Width, Height - match the model's expected input
-        self.mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
-        self.std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+        Args:
+            model_path: Path to the lane detection model. If None, tries default paths.
+            use_gpu: Whether to use GPU for inference
+        """
+        # Configure GPU usage
+        if use_gpu:
+            os.environ["CUDA_VISIBLE_DEVICES"] = "0"  # Use GPU 0
+        else:
+            os.environ["CUDA_VISIBLE_DEVICES"] = "-1"  # Force CPU
 
-        log.debug("RoadDetector initialized with U-Net model")
+        # Load the model with proper error handling
+        self.model = self._load_model_safely(model_path)
 
-    def load_model(self, model_path):
-        """Load the pre-trained U-Net model"""
-        try:
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            log.debug(f"Using device: {self.device}")
+    def _load_model_safely(self, model_path):
+        """
+        Safely load the model with proper error handling and IO device configuration.
+        """
+        # Define possible model paths to try
+        if model_path:
+            paths_to_try = [model_path]
+        else:
+            paths_to_try = [
+                '../LaneLineLableModels/run_allepoch-5425-val_loss-0.0606-val_acc-0.9794.hdf5',
+                'LaneLineLableModels/run_allepoch-5425-val_loss-0.0606-val_acc-0.9794.hdf5'
+            ]
 
-            # Check if the model file exists
-            model_exists = os.path.exists(model_path)
-            log.debug(f"Model path: {os.path.abspath(model_path)}, exists: {model_exists}")
+        # Add absolute paths if relative paths don't work
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        for rel_path in paths_to_try.copy():
+            abs_path = os.path.join(current_dir, rel_path)
+            if abs_path not in paths_to_try:
+                paths_to_try.append(abs_path)
 
-            # Initialize model
-            log.debug("Initializing U-Net model...")
+        # Try loading with different options
+        for path in paths_to_try:
+            if not os.path.exists(path):
+                continue
+
             try:
-                self.model = UNet(in_channels=3, out_channels=1)
-                self.model.float()  # Explicitly set model to float32
-                log.debug("U-Net model initialized")
-            except Exception as e:
-                log.error(f"Failed to initialize U-Net model: {e}")
-                self.model = None
-                return
-
-            # Load model weights if file exists
-            if model_exists:
+                # Try with default options
+                return load_model(path)
+            except Exception as e1:
+                print(f"First attempt to load model failed: {e1}")
                 try:
-                    log.debug(f"Loading model weights from {model_path}")
-                    # Try loading with map_location first
-                    checkpoint = torch.load(model_path, map_location=self.device)
-                    log.debug(
-                        f"Checkpoint keys: {checkpoint.keys() if isinstance(checkpoint, dict) else 'not a dict'}")
+                    # Try with IO device options
+                    options = tf.saved_model.LoadOptions(
+                        experimental_io_device='/job:localhost'
+                    )
+                    return tf.keras.models.load_model(path, options=options)
+                except Exception as e2:
+                    print(f"Second attempt with IO device options failed: {e2}")
+                    continue
 
-                    if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
-                        self.model.load_state_dict(checkpoint['model_state_dict'])
-                        log.debug("Loaded model weights from 'model_state_dict'")
-                    elif isinstance(checkpoint, dict):
-                        # Maybe it's just the state dict directly
-                        self.model.load_state_dict(checkpoint)
-                        log.debug("Loaded model weights directly from checkpoint")
-                    else:
-                        log.error("Checkpoint is not a valid format")
-                        # Continue with random weights
+        raise Exception("Failed to load model from any of the paths. Please provide a valid model path.")
 
-                    self.model = self.model.to(self.device)
-                    self.model.eval()  # Set model to evaluation mode
-                    log.debug(f"Successfully loaded model from {model_path}")
-                except Exception as e:
-                    log.error(f"Error loading model state dict: {e}", exc_info=True)
-                    log.debug("Using model with random weights")
-                    # Continue with random weights
-                    self.model = self.model.to(self.device)
-                    self.model.eval()
-            else:
-                log.warning(f"Model file not found at {model_path}")
-                log.debug("Using model with random weights")
-                # Continue with random weights
-                self.model = self.model.to(self.device)
-                self.model.eval()
+    def process_image(self, image_path=None, image_array=None, resize=(400, 400)):
+        """
+        处理单张图像以检测车道线。
 
-            # Test the model with a dummy input to see if it works
-            try:
-                log.debug("Testing model with dummy input...")
-                dummy_input = torch.randn(1, 3, 256, 512).to(self.device)
-                with torch.no_grad():
-                    dummy_output = self.model(dummy_input)
-                log.debug(f"Dummy output shape: {dummy_output.shape}")
-                log.debug("Model test successful")
-            except Exception as e:
-                log.error(f"Model test failed: {e}", exc_info=True)
-                self.model = None
+        Args:
+            image_path: 图像文件路径
+            image_array: 图像的numpy数组(RGB)
+            resize: 处理前调整图像大小的元组(宽度,高度)
 
-        except Exception as e:
-            log.error(f"Error in load_model: {e}", exc_info=True)
-            self.model = None
-
-    def preprocess_image(self, image):
-        """Preprocess image for U-Net model input"""
+        Returns:
+            包含原始图像、处理后的车道线检测图像和车道线数据的字典
+        """
         try:
-            # Resize to model input dimensions
-            img_resized = cv2.resize(image, self.input_size)
+            if image_path is not None:
+                # 检查文件扩展名
+                _, ext = os.path.splitext(image_path)
+                if not ext.lower() in ['.png', '.jpg', '.jpeg', '.bmp', '.gif']:
+                    raise ValueError(f"不支持的文件扩展名: {ext}")
 
-            # Convert BGR to RGB
-            img_rgb = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
-
-            # Normalize
-            img_normalized = img_rgb.astype(np.float32) / 255.0
-            img_normalized = (img_normalized - self.mean) / self.std
-
-            # Convert HWC to CHW (channels first for PyTorch)
-            img_chw = img_normalized.transpose(2, 0, 1)
-
-            # Create tensor and add batch dimension
-            input_tensor = torch.from_numpy(img_chw).float().unsqueeze(0)
-
-            return input_tensor
-        except Exception as e:
-            log.error(f"Error preprocessing image: {e}")
-            return None
-
-    def _use_color_based_detection(self, frame):
-        """Fallback method using color thresholding for lane detection"""
-        try:
-            # Convert to your preferred color space
-            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-
-            # In EuroTruck, road lanes can be white, yellow, or even gray
-            # Values for white lines (more permissive)
-            lower_white = np.array([0, 0, 150])
-            upper_white = np.array([180, 60, 255])
-
-            # Values for yellow lines (more permissive)
-            lower_yellow = np.array([15, 80, 80])
-            upper_yellow = np.array([35, 255, 255])
-
-            # Values for gray lines (can be common in games)
-            lower_gray = np.array([0, 0, 100])
-            upper_gray = np.array([180, 30, 180])
-
-            # Create masks
-            white_mask = cv2.inRange(hsv, lower_white, upper_white)
-            yellow_mask = cv2.inRange(hsv, lower_yellow, upper_yellow)
-            gray_mask = cv2.inRange(hsv, lower_gray, upper_gray)
-
-            # Combine masks
-            combined_mask = cv2.bitwise_or(white_mask, yellow_mask)
-            combined_mask = cv2.bitwise_or(combined_mask, gray_mask)
-
-            # Focus on the bottom part of the image (where lanes are more likely)
-            h, w = combined_mask.shape
-            roi_mask = np.zeros_like(combined_mask)
-            roi_mask[h // 2:, :] = 255  # Only keep bottom half
-            combined_mask = cv2.bitwise_and(combined_mask, roi_mask)
-
-            # Apply some morphological operations to clean up the mask
-            kernel = np.ones((5, 5), np.uint8)
-            combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_CLOSE, kernel)
-            combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_OPEN, kernel)
-
-            # Try to detect lane-like shapes using Hough lines
-            # This helps remove random noise
-            refined_mask = np.zeros_like(combined_mask)
-            try:
-                lines = cv2.HoughLinesP(combined_mask, 1, np.pi / 180, 50, minLineLength=50, maxLineGap=100)
-                if lines is not None:
-                    for line in lines:
-                        x1, y1, x2, y2 = line[0]
-                        cv2.line(refined_mask, (x1, y1), (x2, y2), 255, 10)
-
-                    # Apply dilation to connect nearby lines
-                    refined_mask = cv2.dilate(refined_mask, kernel, iterations=2)
-                    self.lane_mask = refined_mask
-                    log.debug(f"Lane detection with Hough transform: {len(lines)} lines detected")
+                # 从路径加载图像
+                image = Image.open(image_path).convert('RGB')
+            elif image_array is not None:
+                # 使用提供的图像数组
+                # 确保图像是RGB格式(OpenCV通常使用BGR)
+                if len(image_array.shape) == 3 and image_array.shape[2] == 3:
+                    # 如果已经是RGB，直接使用
+                    image = Image.fromarray(image_array.astype('uint8'))
                 else:
-                    # Fallback to the combined mask if no lines detected
-                    self.lane_mask = combined_mask
-                    log.debug("No lines detected with Hough transform, using combined mask")
+                    raise ValueError("提供的图像数组格式不正确，应为RGB")
+            else:
+                raise ValueError("必须提供image_path或image_array")
+
+            # 调整图像大小
+            resized_image = image.resize(resize)
+
+            # 准备模型输入
+            model_input = np.array(resized_image)[None, ...]
+
+            # 安全获取车道线预测
+            try:
+                lane_predictions = self.model(model_input)
             except Exception as e:
-                log.error(f"Error in Hough transform: {e}")
-                # Fallback to the combined mask
-                self.lane_mask = combined_mask
+                print(f"模型推理过程中出错: {e}")
+                # 如果模型失败则返回空结果
+                return {
+                    'original_image': image,
+                    'resized_image': resized_image,
+                    'lane_image': None,
+                    'lane_data': None,
+                    'error': str(e)
+                }
 
-            # Count lane pixels for debugging
-            lane_pixels = np.sum(self.lane_mask > 0)
-            total_pixels = self.lane_mask.size
-            log.debug(
-                f"Color-based lane detection: {lane_pixels}/{total_pixels} pixels ({lane_pixels / total_pixels * 100:.2f}%)")
+            # 将预测转换为车道线图
+            lanes = np.argmax(lane_predictions[0, ...], axis=-1) * 255
+
+            # 从车道线数据创建图像
+            lane_image = Image.fromarray(lanes.astype('uint8'), 'L')
+
+            return {
+                'original_image': image,
+                'resized_image': resized_image,
+                'lane_image': lane_image,
+                'lane_data': lanes
+            }
         except Exception as e:
-            log.error(f"Error in color-based lane detection: {e}")
-            self.lane_mask = None
+            print(f"处理图像时出错: {e}")
+            return {'error': str(e)}
 
-    def process_data(self, frame):
-        """Process road view to detect lanes"""
-        if frame is None:
-            log.debug("No color data available")
-            return
+    def process_folder(self, folder_path, output_folder=None):
+        """
+        Process all images in a folder.
 
+        Args:
+            folder_path: Path to the folder containing images
+            output_folder: Path to save processed images (optional)
+
+        Returns:
+            List of dictionaries with original and processed images
+        """
+        # Check if folder exists
+        if not os.path.exists(folder_path):
+            raise ValueError(f"Folder does not exist: {folder_path}")
+
+        # Get all image files in the folder
+        image_files = [f for f in os.listdir(folder_path)
+                       if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.gif'))]
+        image_files.sort()
+
+        if not image_files:
+            print(f"No image files found in {folder_path}")
+            return []
+
+        results = []
+
+        for filename in image_files:
+            try:
+                image_path = os.path.join(folder_path, filename)
+                result = self.process_image(image_path=image_path)
+
+                # Skip if processing failed
+                if 'error' in result:
+                    print(f"Skipping {filename}: {result['error']}")
+                    continue
+
+                results.append(result)
+
+                # Save processed image if output folder is specified
+                if output_folder and result.get('lane_image'):
+                    if not os.path.exists(output_folder):
+                        os.makedirs(output_folder)
+
+                    # Save lane image
+                    output_path = os.path.join(output_folder, f"lane_{filename}")
+                    result['lane_image'].save(output_path)
+            except Exception as e:
+                print(f"Error processing {filename}: {e}")
+
+        return results
+
+    def process_numpy_batch(self, batch_images):
+        """
+        Process a batch of images as numpy arrays.
+
+        Args:
+            batch_images: Numpy array of shape (batch_size, height, width, channels)
+
+        Returns:
+            Numpy array of lane predictions
+        """
         try:
-            # For debugging, log the color data dimensions
-            log.debug(f"Processing color data with shape: {frame.shape}")
+            # Check if input is a numpy array
+            if not isinstance(batch_images, np.ndarray):
+                raise TypeError("batch_images must be a numpy array")
 
-            # Try U-Net model first
-            if self.model is not None:
-                try:
-                    log.debug("Attempting to use U-Net model")
-                    # Create a preprocessed input for the model
-                    input_tensor = self.preprocess_image(frame)
+            # Ensure the input has 4 dimensions (batch, height, width, channels)
+            if len(batch_images.shape) != 4:
+                raise ValueError("batch_images must have shape (batch_size, height, width, channels)")
 
-                    if input_tensor is not None:
-                        # Run inference
-                        input_tensor = input_tensor.to(self.device)
-                        with torch.no_grad():
-                            prediction = self.model(input_tensor)
-                            prediction = prediction.squeeze().cpu().numpy()
+            # Resize images if needed
+            resized_batch = []
+            for img in batch_images:
+                pil_img = Image.fromarray(img)
+                resized = pil_img.resize((400, 400))
+                resized_batch.append(np.array(resized))
 
-                        # Convert prediction to binary mask
-                        self.lane_mask = (prediction > 0.5).astype(np.uint8) * 255
+            resized_batch = np.array(resized_batch)
 
-                        # Resize to original frame size
-                        self.lane_mask = cv2.resize(self.lane_mask, (frame.shape[1], frame.shape[0]))
-                        log.debug(f"U-Net lane detection completed, mask shape: {self.lane_mask.shape}")
-                    else:
-                        log.warning("Failed to preprocess image for U-Net")
-                        self._use_color_based_detection(frame)
-                except Exception as e:
-                    log.error(f"Error using U-Net model: {e}", exc_info=True)
-                    self._use_color_based_detection(frame)
-            else:
-                log.debug("No U-Net model available, using color-based detection")
-                self._use_color_based_detection(frame)
+            # Get lane predictions
+            lane_predictions = self.model(resized_batch)
 
-            # For debugging, visualize the lane mask
-            if self.lane_mask is not None:
-                # Calculate pixel statistics for debugging
-                white_pixels = np.sum(self.lane_mask > 0)
-                total_pixels = self.lane_mask.size
-                percentage = (white_pixels / total_pixels) * 100
-                log.debug(f"Lane mask statistics: {white_pixels}/{total_pixels} white pixels ({percentage:.2f}%)")
+            # Convert predictions to lane maps
+            lanes = np.argmax(lane_predictions, axis=-1) * 255
 
-                # Save lane mask for debugging
-                try:
-                    debug_dir = "debug_images"
-                    os.makedirs(debug_dir, exist_ok=True)
-                    timestamp = time.strftime("%Y%m%d-%H%M%S")
-                    cv2.imwrite(f"{debug_dir}/lane_mask_{timestamp}.jpg", self.lane_mask)
-                    log.debug(f"Saved lane mask to {debug_dir}/lane_mask_{timestamp}.jpg")
-                except Exception as e:
-                    log.error(f"Failed to save debug lane mask: {e}")
-            else:
-                log.warning("No lane mask was generated")
-
-            # Calculate lane metrics
-            self._lane_center_offset = self.get_lane_center_offset()
-            self._lane_curvature = self.get_lane_curvature()
-            self._is_lane_detected = self.is_lane_detected()
-
-            log.debug(f"Lane detection results: detected={self._is_lane_detected}, " +
-                           f"offset={self._lane_center_offset:.2f}, curvature={self._lane_curvature:.2f}")
-
+            return lanes
         except Exception as e:
-            log.error(f"Error in process_data: {e}", exc_info=True)
-            self.lane_mask = None
-            self._lane_center_offset = 0.0
-            self._lane_curvature = 0.0
-            self._is_lane_detected = False
-
-    def _use_color_based_detection(self, frame):
-        """Fallback method using color thresholding for lane detection"""
-        try:
-            # Convert to your preferred color space
-            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-
-            # Adjust these values based on the lane colors in the game
-            # Values for white lines
-            lower_white = np.array([0, 0, 200])
-            upper_white = np.array([180, 30, 255])
-
-            # Values for yellow lines
-            lower_yellow = np.array([20, 100, 100])
-            upper_yellow = np.array([30, 255, 255])
-
-            # Create masks for white and yellow lines
-            white_mask = cv2.inRange(hsv, lower_white, upper_white)
-            yellow_mask = cv2.inRange(hsv, lower_yellow, upper_yellow)
-
-            # Combine masks
-            self.lane_mask = cv2.bitwise_or(white_mask, yellow_mask)
-
-            # Apply some morphological operations to clean up the mask
-            kernel = np.ones((5, 5), np.uint8)
-            self.lane_mask = cv2.morphologyEx(self.lane_mask, cv2.MORPH_CLOSE, kernel)
-            self.lane_mask = cv2.morphologyEx(self.lane_mask, cv2.MORPH_OPEN, kernel)
-
-            log.debug("Color-based lane detection applied")
-        except Exception as e:
-            log.error(f"Error in color-based lane detection: {e}")
-            self.lane_mask = None
-
-    def create_visualization(self, frame):
-        """Create a visualization of the lane detection for debugging"""
-        if frame is None or self.lane_mask is None:
+            print(f"Error processing batch: {e}")
             return None
 
-        try:
-            # Create a colored overlay for visualization
-            vis_frame = frame.copy()
-            lane_overlay = np.zeros_like(vis_frame)
-            lane_overlay[:, :, 1] = self.lane_mask  # Green channel
-
-            # Blend the overlay with the original image
-            alpha = 0.4  # Transparency factor
-            vis_frame = cv2.addWeighted(vis_frame, 1, lane_overlay, alpha, 0)
-
-            # Add text with lane metrics
-            cv2.putText(vis_frame, f"Lane Offset: {self._lane_center_offset:.2f}",
-                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-            cv2.putText(vis_frame, f"Curvature: {self._lane_curvature:.2f}",
-                        (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-            cv2.putText(vis_frame, f"Lane Detected: {self._is_lane_detected}",
-                        (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-
-            return vis_frame
-        except Exception as e:
-            log.error(f"Error creating visualization: {e}")
-            return None
-
-    def get_lane_center_offset(self):
+    def __call__(self, image_or_path):
         """
-        Returns the offset from the center of the lane
-        Negative values mean the vehicle is left of center
-        Positive values mean the vehicle is right of center
-        Range: -1.0 to 1.0
+        Makes the class callable to easily process a single image.
+
+        Args:
+            image_or_path: Either a file path or a numpy array
+
+        Returns:
+            Lane detection result
         """
-        try:
-            if self.lane_mask is not None:
-                height, width = self.lane_mask.shape[:2]
-
-                # Focus on the bottom third of the image (closer to the vehicle)
-                bottom_section = self.lane_mask[int(height * 2 / 3):, :]
-
-                # Find all lane pixels
-                lane_pixels = np.where(bottom_section > 0)
-
-                if len(lane_pixels[1]) > 0:
-                    # Calculate average x position of lane pixels
-                    lane_center_x = np.mean(lane_pixels[1])
-
-                    # Calculate offset from center (-1 to 1)
-                    screen_center_x = width / 2
-                    offset = (lane_center_x - screen_center_x) / screen_center_x
-
-                    # Apply some smoothing to avoid jittery steering
-                    offset = np.clip(offset, -1.0, 1.0)
-
-                    return offset
-
-            return 0.0  # Default: assume centered
-        except Exception as e:
-            log.error(f"Error calculating lane offset: {e}")
-            return 0.0
-
-    def get_lane_curvature(self):
-        """
-        Returns a measure of lane curvature
-        Higher values indicate sharper curves
-        Range: 0.0 (straight) to 1.0 (very curved)
-        """
-        try:
-            if self.lane_mask is not None:
-                height, width = self.lane_mask.shape[:2]
-
-                # Divide image into 3 vertical sections from bottom to top
-                section_height = height // 3
-
-                sections = [
-                    self.lane_mask[height - section_height:height, :],  # Bottom
-                    self.lane_mask[height - 2 * section_height:height - section_height, :],  # Middle
-                    self.lane_mask[height - 3 * section_height:height - 2 * section_height, :]  # Top
-                ]
-
-                # Find center of lane in each section
-                centers = []
-                for i, section in enumerate(sections):
-                    lane_pixels = np.where(section > 0)
-                    if len(lane_pixels[1]) > 0:
-                        center_x = np.mean(lane_pixels[1])
-                        centers.append(center_x)
-                    else:
-                        # If we don't find lane pixels in a section, use previous section's center
-                        # or the screen center if it's the first section
-                        centers.append(centers[-1] if centers else (width / 2))
-
-                if len(centers) >= 3:
-                    # Calculate how much the center position changes (lane curvature)
-                    # Weight the bottom section more (closer to vehicle)
-                    delta1 = abs(centers[0] - centers[1]) / width  # Bottom to middle
-                    delta2 = abs(centers[1] - centers[2]) / width  # Middle to top
-
-                    # Combine with more weight to the closer section
-                    curvature = (delta1 * 0.7 + delta2 * 0.3)
-
-                    # Normalize to 0-1 range with scaling factor
-                    return min(curvature * 5.0, 1.0)  # Scale factor can be adjusted
-
-            return 0.0  # Default: assume straight road
-        except Exception as e:
-            log.error(f"Error calculating curvature: {e}")
-            return 0.0
-
-    def is_lane_detected(self):
-        """
-        Returns whether lane markings were successfully detected
-        """
-        try:
-            if self.lane_mask is not None:
-                # We need to have enough lane pixels to consider the lane detected
-                # Reduce the threshold to make it more sensitive
-                min_pixels = self.lane_mask.shape[0] * self.lane_mask.shape[1] * 0.01  # Only 1% of pixels
-                detected_pixels = np.sum(self.lane_mask > 0)
-
-                # Log actual values for debugging
-                log.debug(f"Lane pixels: {detected_pixels}/{self.lane_mask.size}, min required: {min_pixels}")
-
-                # Consider lane detected if there are enough pixels
-                return detected_pixels > min_pixels
-
-            return False
-        except Exception as e:
-            log.error(f"Error checking lane detection: {e}")
-            return False
-
-    def get_drivable_direction(self):
-        """
-        Returns a recommended driving direction based on lane detection
-        Returns: angle in degrees, where 0 is straight ahead,
-                negative is left, positive is right
-        """
-        try:
-            if not self.is_lane_detected():
-                return 0.0  # If no lane detected, suggest going straight
-
-            # Convert offset to steering angle
-            # Scale factor determines how aggressively to steer
-            # Higher curvature should result in more aggressive steering
-            scale_factor = 1.0 + self.get_lane_curvature() * 2.0  # Range: 1.0 to 3.0
-
-            # Convert offset (-1 to 1) to angle (-30 to 30 degrees)
-            # Apply scaling based on curvature
-            steering_angle = -self._lane_center_offset * 30.0 * scale_factor
-
-            # Limit maximum steering angle
-            steering_angle = np.clip(steering_angle, -45.0, 45.0)
-
-            return steering_angle
-        except Exception as e:
-            log.error(f"Error calculating drivable direction: {e}")
-            return 0.0
-
-    def get_recommended_speed(self):
-        """
-        Returns a recommended speed factor based on road conditions
-        Range: 0.0 (stop) to 1.0 (full speed)
-        """
-        try:
-            if not self.is_lane_detected():
-                return 0.5  # Moderate speed if no lane detected
-
-            # Reduce speed for curves
-            curvature = self.get_lane_curvature()
-
-            # Sharper curves = slower speed (inverse relationship)
-            # speed_factor ranges from 0.4 to 1.0
-            speed_factor = 1.0 - (curvature * 0.6)
-
-            return speed_factor
-        except Exception as e:
-            log.error(f"Error calculating recommended speed: {e}")
-            return 0.5  # Default to moderate speed
+        if isinstance(image_or_path, str):
+            return self.process_image(image_path=image_or_path)
+        elif isinstance(image_or_path, np.ndarray):
+            return self.process_image(image_array=image_or_path)
+        else:
+            raise TypeError("Input must be either a file path (str) or an image array (numpy.ndarray)")
 
 
 class YOLODetector:
@@ -557,15 +322,33 @@ class YOLODetector:
 
     def save_detection(self, frame, detected_classes, roi, lane_mask_detector):
         """保存检测结果和掩码图像（如果提供）"""
-        # 创建带有时间戳和检测类别的基本文件名
-        timestamp = datetime.now().strftime("%H-%M-%S")
-        classes_str = "_".join(list(set(detected_classes)))
-        base_filename = f"{timestamp}_{classes_str}"
+        try:
+            # 创建带有时间戳和检测类别的基本文件名
+            timestamp = datetime.now().strftime("%H-%M-%S")
+            classes_str = "_".join(list(set(detected_classes))) if detected_classes else "no_detection"
+            base_filename = f"{timestamp}_{classes_str}"
 
-        # 保存带有检测框的原始图像
-        original_filepath = os.path.join(self.save_dir, f"{base_filename}.jpg")
-        cv2.imwrite(original_filepath, frame)
-        log.debug(f"原始检测结果已保存: {original_filepath}")
+            # 保存带有检测框的原始图像
+            original_filepath = os.path.join(self.save_dir, f"{base_filename}.jpg")
+            cv2.imwrite(original_filepath, frame)
+            log.debug(f"原始检测结果已保存: {original_filepath}")
 
-        lane_mask_detector.process_data(roi)
-        lane_mask_detector.create_visualization(roi)
+            # 处理车道线检测
+            try:
+                # 注意：OpenCV 的 frame 是 BGR 格式，但 PIL 需要 RGB
+                rgb_frame = cv2.cvtColor(roi, cv2.COLOR_BGR2RGB)
+                result = lane_mask_detector.process_image(image_array=rgb_frame)
+
+                # 检查结果是否有效
+                if result and 'lane_image' in result and result['lane_image'] is not None:
+                    # 添加正确的文件扩展名
+                    output_path = os.path.join(self.save_dir, f"lane_{base_filename}.png")
+                    result['lane_image'].save(output_path)
+                    log.debug(f"车道线检测结果已保存: {output_path}")
+                else:
+                    log.warning("车道线检测没有产生有效结果")
+            except Exception as e:
+                log.error(f"车道线检测处理出错: {str(e)}")
+
+        except Exception as e:
+            log.error(f"保存检测结果时出错: {str(e)}")

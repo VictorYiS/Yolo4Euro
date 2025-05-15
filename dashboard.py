@@ -1,6 +1,6 @@
 # Simplified truck dashboard
 import grabscreen
-from detector import YOLODetector, RoadDetector
+from detector import YOLODetector, LaneDetector
 from window import *
 
 
@@ -13,7 +13,7 @@ class TruckDashboard:
         # self.gear = 0
         self.fuel = 100.0
         self.yolo_detector = YOLODetector("runs/detect/kitti_yolo11/weights/best.pt")
-        self.lane_mask_detector = RoadDetector()
+        self.lane_mask_detector = LaneDetector()
         self.lane_status = None
         self.objects = []
 
@@ -41,6 +41,7 @@ class TruckDashboard:
 
         roi = game_window.color
         roi_rgb = cv2.cvtColor(roi, cv2.COLOR_RGBA2RGB)
+        self.lane_status = self.lane_mask_detector(roi_rgb)
 
         # # 车道线检测
         # self.lane_status = self.lane_mask_detector.detect(roi)
@@ -50,7 +51,7 @@ class TruckDashboard:
 
         yolo_results = self.yolo_detector.detect(roi_rgb)
         if yolo_results is not None:
-            self.objects = self.yolo_detector.process_detections(roi_rgb, yolo_results, roi, self.lane_mask_detector)
+            self.objects = self.yolo_detector.process_detections(roi_rgb, yolo_results)
         else:
             print("No detection results.")
         self.detect_frame = roi_rgb
