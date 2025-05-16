@@ -12,10 +12,10 @@ class TruckDashboard:
         self.time = 0
         # self.gear = 0
         self.fuel = 100.0
-        self.yolo_detector = YOLODetector("runs/detect/kitti_yolo11/weights/best_light.pt")
+        self.yolo_detector = YOLODetector("runs/detect/kitti_yolo11/weights/1000m_736sgz.pt")
         self.lane_mask_detector = LaneDetector()
         self.lane_status = None
-        self.objects = []
+        self.classes = []
 
     def get_stored_data(self):
         return {
@@ -25,7 +25,7 @@ class TruckDashboard:
             # "gear": self.gear,
             "fuel": self.fuel,
             "lane_status": self.lane_status,
-            "objects": self.objects,
+            "classes": self.classes,
             "detect_frame": self.detect_frame,
         }
 
@@ -41,7 +41,7 @@ class TruckDashboard:
 
         roi = game_window.color
         roi_rgb = cv2.cvtColor(roi, cv2.COLOR_RGBA2RGB)
-        self.lane_status = self.lane_mask_detector(roi_rgb)
+        self.lane_status = self.lane_mask_detector(roi)
 
         # # 车道线检测
         # self.lane_status = self.lane_mask_detector.detect(roi)
@@ -51,7 +51,7 @@ class TruckDashboard:
 
         yolo_results = self.yolo_detector.detect(roi_rgb)
         if yolo_results is not None:
-            self.objects = self.yolo_detector.process_detections(roi_rgb, yolo_results)
+            objects, self.classes = self.yolo_detector.process_detections(roi_rgb, yolo_results)
         else:
             print("No detection results.")
         self.detect_frame = roi_rgb
