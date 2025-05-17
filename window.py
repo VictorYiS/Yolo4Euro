@@ -285,6 +285,7 @@ class NumberWindow(StatusWindow):
         return f"NumberWindow(value={self.value})"
 
 
+
 # 时间窗口类，直接返回识别的时间值
 class TimeWindow(NumberWindow):
     def __init__(self, sx, sy, ex, ey):

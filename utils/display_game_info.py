@@ -2,6 +2,9 @@ import signal
 import time
 import tkinter as tk
 
+# from Yolo4Euro.window import self_set_speed
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import grabscreen
 import utils.change_window as change_window
 from window import *
