@@ -1,9 +1,12 @@
 # window.py
+import os
 import re
 
 import cv2
 import numpy as np
 import pytesseract
+
+from log import log
 
 
 # 基类，封装静态 offset 和 frame
@@ -115,6 +118,102 @@ class StatusWindow(BaseWindow):
         return self.status
 
 
+# GearWindow 类，用于识别档位信息 (A1-A12+, N, R1-R3)
+class GearWindow(BaseWindow):
+    def __init__(self, sx, sy, ex, ey):
+        super().__init__(sx, sy, ex, ey)
+        self.gear_text = "N"  # 默认为空档
+        self.gear_type = "neutral"  # 可以是 "advance", "neutral", 或 "reverse"
+        self.gear_number = 0  # 档位数字部分
+        self.gray = None
+
+    def update(self):
+        super().update()
+        if self.color is not None:
+            self.process_color()
+
+    def get_status(self):
+        # 返回档位状态
+        return self.gear_type
+
+    def process_color(self):
+        if self.color is None:
+            log.debug("GearWindow: No color data to process.")
+
+        # 转换为灰度图
+        self.gray = cv2.cvtColor(self.color, cv2.COLOR_BGR2GRAY)
+
+        # 图像预处理优化识别率
+        resized = cv2.resize(self.gray, None, fx=2.5, fy=2.5, interpolation=cv2.INTER_CUBIC)
+        _, binary = cv2.threshold(resized, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+        try:
+            # 使用仅限于可能出现的字符集
+            custom_config = r'--oem 3 --psm 7 -c tessedit_char_whitelist=ARN123456789'
+            text = pytesseract.image_to_string(binary, config=custom_config).strip()
+
+            # 处理识别的文本
+            self._process_gear_text(text)
+
+        except Exception as e:
+            print(f"Gear OCR Error: {e}")
+            self.reset_gear()
+
+    def _process_gear_text(self, text):
+        """处理识别的文本以确定档位状态"""
+        # 移除空格并标准化
+        text = re.sub(r'\s+', '', text).upper()
+        log.debug(f"GearWindow: Processed text: {text}")
+
+        # 匹配档位模式
+        advance_match = re.search(r'A(\d+)', text)
+        reverse_match = re.search(r'R([123])', text)
+
+        if text == 'N':
+            self.gear_text = 'N'
+            self.gear_type = 'neutral'
+            self.gear_number = 0
+        elif advance_match:
+            gear_num = int(advance_match.group(1))
+            # 验证前进档位范围
+            if 1 <= gear_num <= 15:
+                self.gear_text = f'A{gear_num}'
+                self.gear_type = 'advance'
+                self.gear_number = gear_num
+
+        elif reverse_match:
+            gear_num = int(reverse_match.group(1))
+            # 验证倒退档位范围
+            if 1 <= gear_num <= 3:
+                self.gear_text = f'R{gear_num}'
+                self.gear_type = 'reverse'
+                self.gear_number = gear_num
+
+        else:
+            # 基于字符存在进行简单匹配
+            if 'A' in text:
+                nums = re.findall(r'\d+', text)
+                if nums and 1 <= int(nums[0]) <= 15:
+                    self.gear_text = f'A{nums[0]}'
+                    self.gear_type = 'advance'
+                    self.gear_number = int(nums[0])
+            elif 'R' in text:
+                nums = re.findall(r'\d+', text)
+                if nums and 1 <= int(nums[0]) <= 3:
+                    self.gear_text = f'R{nums[0]}'
+                    self.gear_type = 'reverse'
+                    self.gear_number = int(nums[0])
+
+    def reset_gear(self):
+        """重置档位信息为默认值"""
+        self.gear_text = "N"
+        self.gear_type = "neutral"
+        self.gear_number = 0
+
+    def __repr__(self):
+        return f"GearWindow(gear={self.gear_text}, type={self.gear_type}, number={self.gear_number})"
+
+
 # 数值窗口类，直接返回识别的实际数值
 class NumberWindow(StatusWindow):
     def __init__(self, sx, sy, ex, ey, min_value=0, max_value=100):
@@ -158,8 +257,8 @@ class NumberWindow(StatusWindow):
                     self.value = 0
                     self.status = 0
             else:
-                self.value = 0
-                self.status = 0
+                # 如果没有找到数字，保持不变
+                log.debug("NumberWindow: No valid number found.")
 
             # 如果识别结果不可靠，尝试备选方法
             if self.value == 0 and self.min_value > 0:
@@ -379,10 +478,11 @@ game_window = BaseWindow(0, 0, game_width, game_height)
 # 转换后的窗口坐标
 
 # 根据游戏调整
-self_speed_window = NumberWindow(*convert_coordinates(1486, 706, 1513, 729))
+self_speed_window = NumberWindow(*convert_coordinates(1486, 706, 1513, 729), min_value=0, max_value=90)
 self_distance_window = NumberWindow(*convert_coordinates(1585, 739, 1620, 757))
 self_time_window = TimeWindow(1831, 707, 1884, 727)
 self_set_speed = NumberWindow(*convert_coordinates(1498,783,1519,799))
+self_gear_window = GearWindow(1601, 706, 1625, 729)
 
 roi_x_size = 1000  # ROI的宽度和高度（以游戏窗口中心为中心的矩形）
 roi_y_size = 1200  # ROI的宽度和高度（以游戏窗口中心为中心的矩形）
