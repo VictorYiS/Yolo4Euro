@@ -216,12 +216,17 @@ class GearWindow(BaseWindow):
 
 # 数值窗口类，直接返回识别的实际数值
 class NumberWindow(StatusWindow):
+    basedir = os.path.dirname(os.path.abspath(__file__))
+    save_dir = os.path.join(basedir, "..", "save")
+    _save_counter = 0
     def __init__(self, sx, sy, ex, ey, min_value=0, max_value=100):
         super().__init__(sx, sy, ex, ey)
         self.value = 0
         self.min_value = min_value
         self.max_value = max_value
         self.gray = None
+
+        os.makedirs(self.save_dir, exist_ok=True)
 
     def process_color(self):
         if self.color is None:
@@ -232,6 +237,13 @@ class NumberWindow(StatusWindow):
         # 转换为灰度图
         self.gray = cv2.cvtColor(self.color, cv2.COLOR_BGR2GRAY)
 
+        # filename = os.path.join(
+        #     self.save_dir,
+        #     f"{self.__class__.__name__}_{type(self)._save_counter:06d}.png"
+        # )
+        # success = cv2.imwrite(filename, self.gray)
+        # print(f"[NumberWindow] saving to {filename} →", "OK" if success else "FAILED")
+        # type(self)._save_counter += 1
         # 增强预处理步骤
         resized = cv2.resize(self.gray, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
         binary = cv2.adaptiveThreshold(resized, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
@@ -479,11 +491,11 @@ game_window = BaseWindow(0, 0, game_width, game_height)
 # 转换后的窗口坐标
 
 # 根据游戏调整
-self_speed_window = NumberWindow(*convert_coordinates(1486, 706, 1513, 729), min_value=0, max_value=90)
-self_distance_window = NumberWindow(*convert_coordinates(1585, 739, 1620, 757))
+self_speed_window = NumberWindow(*convert_coordinates(1486, 706, 1510, 728), min_value=0, max_value=90)
+self_distance_window = NumberWindow(*convert_coordinates(1590, 735, 1620, 757))
 self_time_window = TimeWindow(1831, 707, 1884, 727)
-self_set_speed = NumberWindow(*convert_coordinates(1498,783,1519,799))
-self_gear_window = GearWindow(1601, 706, 1625, 729)
+self_set_speed = NumberWindow(*convert_coordinates(1498,783,1520,799))
+self_gear_window = GearWindow(1601, 700, 1625, 729)
 
 roi_x_size = 1000  # ROI的宽度和高度（以游戏窗口中心为中心的矩形）
 roi_y_size = 1200  # ROI的宽度和高度（以游戏窗口中心为中心的矩形）
