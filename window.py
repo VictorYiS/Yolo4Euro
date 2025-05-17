@@ -134,7 +134,7 @@ class GearWindow(BaseWindow):
 
     def get_status(self):
         # 返回档位状态
-        return self.gear_type
+        return self.gear_text
 
     def process_color(self):
         if self.color is None:
