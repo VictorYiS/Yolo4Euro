@@ -1,6 +1,8 @@
 import signal
 import time
 import tkinter as tk
+import os
+import sys
 
 import grabscreen
 import utils.change_window as change_window
@@ -150,6 +152,7 @@ def main_loop():
     app.add_variable("self_distance", var_type="integer")
 
     app.add_variable("self_time", var_type="String")
+    app.add_variable("self_setspeed",var_type="integer")
 
     if wait_for_game_window():
         display_gui_elements()
@@ -165,7 +168,8 @@ def main_loop():
                 **{
                     "self_speed": self_speed_window.get_status(),
                     "self_distance": self_distance_window.get_status(),
-                    "self_time": self_time_window.get_status()
+                    "self_time": self_time_window.get_status(),
+                    "self_setspeed":self_set_speed.get_status()
                 }
             )
 

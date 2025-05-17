@@ -382,6 +382,7 @@ game_window = BaseWindow(0, 0, game_width, game_height)
 self_speed_window = NumberWindow(*convert_coordinates(1486, 706, 1513, 729))
 self_distance_window = NumberWindow(*convert_coordinates(1585, 739, 1620, 757))
 self_time_window = TimeWindow(1831, 707, 1884, 727)
+self_set_speed = NumberWindow(*convert_coordinates(1498,783,1519,799))
 
 roi_x_size = 1000  # ROI的宽度和高度（以游戏窗口中心为中心的矩形）
 roi_y_size = 1200  # ROI的宽度和高度（以游戏窗口中心为中心的矩形）

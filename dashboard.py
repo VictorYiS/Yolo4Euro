@@ -36,6 +36,7 @@ class TruckDashboard:
         self.speed = self_speed_window.get_status()
         self.distance = self_distance_window.get_status()
         self.time = self_time_window.get_status()
+        self.setspeed = self_set_speed.get_status()
         # self.gear = gear
         # self.fuel = self_fuel_window.get_status()
 
