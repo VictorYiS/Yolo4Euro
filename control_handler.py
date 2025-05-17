@@ -189,12 +189,12 @@ class ProcessingManager:
         state = dict(self.shared_data)
 
         # 处理序列化的objects数据
-        if "classes" in state and state["classes"]:
+        if "car_detect" in state and state["car_detect"]:
             try:
-                state["classes"] = pickle.loads(state["classes"])
+                state["car_detect"] = pickle.loads(state["car_detect"])
             except Exception as e:
                 log.error(f"Error deserializing classes: {e}")
-                state["classes"] = []
+                state["car_detect"] = None
 
         # 处理lane_status数据
         if state.get("lane_status") is True:

@@ -17,7 +17,7 @@ class TruckDashboard:
         self.vehicle_detector = YOLODetector("models/best.pt")
         self.lane_mask_detector = LaneDetector()
         self.lane_status = None
-        self.car_detect = []
+        self.car_detect = None
 
     def get_stored_data(self):
         return {
