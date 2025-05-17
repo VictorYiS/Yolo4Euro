@@ -263,8 +263,8 @@ class YOLODetector:
         self.detection_threshold = 0.5  # 置信度阈值
 
         # 创建保存检测结果的目录
-        self.save_dir = os.path.join("detections", datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
-        os.makedirs(self.save_dir, exist_ok=True)
+        # self.save_dir = os.path.join("detections", datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
+        # os.makedirs(self.save_dir, exist_ok=True)
 
         log.debug(f"YOLO模型已加载: {model_path}")
         log.debug(f"可用类别: {self.class_names}")

@@ -16,7 +16,7 @@ class TruckController():
     def get_action(self, status):
         commands = []
         lane_data = status.get("lane_status")['lane_data']
-        traffic_light_data = status.get("classes")
+        # traffic_light_data = status.get("traffic_classes")
 
         if lane_data is None:
             # If lane detection failed, stop the truck
@@ -35,8 +35,8 @@ class TruckController():
             commands.append(['s', '0.03'])
             return commands
 
-        traffic_status = self.process_traffic_light(traffic_light_data)
-        commands.append(traffic_status)
+        # traffic_status = self.process_traffic_light(traffic_light_data)
+        # commands.append(traffic_status)
 
         # Calculate center of lane
         left_points = []

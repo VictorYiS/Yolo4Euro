@@ -12,7 +12,8 @@ class TruckDashboard:
         self.time = 0
         # self.gear = 0
         self.fuel = 100.0
-        self.yolo_detector = YOLODetector("runs/detect/kitti_yolo11/weights/1000m_736sgz.pt")
+        # self.yolo_detector = YOLODetector("models/1000m_736sgz.pt")
+        self.vehicle_detector = YOLODetector("models/best.pt")
         self.lane_mask_detector = LaneDetector()
         self.lane_status = None
         self.classes = []
@@ -49,9 +50,9 @@ class TruckDashboard:
         #     print("Warning: Lane mask is empty or all zeros")
 
 
-        yolo_results = self.yolo_detector.detect(roi_rgb)
+        yolo_results = self.vehicle_detector.detect(roi_rgb)
         if yolo_results is not None:
-            objects, self.classes = self.yolo_detector.process_detections(roi_rgb, yolo_results)
+            objects, self.classes = self.vehicle_detector.process_detections(roi_rgb, yolo_results)
         else:
             print("No detection results.")
         self.detect_frame = roi_rgb

@@ -172,3 +172,16 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+models/
+LaneLineLableModels/
+logs/
+detections/
+debug_images/
+data_object/
+data_road/
+output_frames/
+processed_data/
+results/
+runs/
+videos/
+yolo_dataset/
