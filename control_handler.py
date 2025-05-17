@@ -16,35 +16,53 @@ from driver import TruckController
 from log import log
 
 
+# Add to the top of the file in control_handler.py or create a new version
+
+### modification: Improve action execution in ActionThread class
 class ActionThread(threading.Thread):
     def __init__(self, normal_queue, kb_controller):
         threading.Thread.__init__(self, daemon=True)
         self.normal_queue = normal_queue
         self.kb_controller = kb_controller
         self.running = True
+        self.last_action = None
+        self.last_action_time = time.time()
+        self.min_action_interval = 0.01  # Minimum time between actions
 
     def run(self):
         """Process actions from queues with priority for emergency actions"""
         log.info("Action thread started")
         while self.running:
-            # If no emergency actions, check normal queue
             try:
                 # Wait a bit for normal actions
-                action = self.normal_queue.get(timeout=0.05)
+                action = self.normal_queue.get(timeout=0.02)  # Reduced timeout for faster response
+
+                # Check if we need to throttle rapid key presses
+                current_time = time.time()
+                time_since_last = current_time - self.last_action_time
+
+                if time_since_last < self.min_action_interval:
+                    # Too soon for another action, slight sleep to prevent CPU hogging
+                    time.sleep(max(0.001, self.min_action_interval - time_since_last))
+
                 log.debug(f"Executing normal action: {action}")
                 self._execute_action(action)
-                # self.normal_queue.task_done()
+                self.last_action = action
+                self.last_action_time = time.time()
+
             except queue.Empty:
                 # No actions to process
-                time.sleep(0.001)
+                time.sleep(0.001)  # Very short sleep to reduce CPU usage
             except Exception as e:
                 log.error(f"Error in action thread: {e}")
-                time.sleep(0.1)  # Prevent high CPU usage on error
+                time.sleep(0.05)  # Prevent high CPU usage on error
 
     def _execute_action(self, action):
-        # Expected action format is a dict with at least 'key' and 'duration'
+        # Execute the action with the specified duration
         if 'key' in action and 'duration' in action:
-            self.kb_controller.press_key(action['key'], action['duration'])
+            # Ensure minimum duration for key presses to be registered by the game
+            duration = max(0.01, float(action['duration']))
+            self.kb_controller.press_key(action['key'], duration)
         else:
             log.error(f"Invalid action format: {action}")
 
@@ -55,11 +73,13 @@ class ActionThread(threading.Thread):
         self.join()
 
 
+### modification: Improve KeyController for more responsive control
 class KeyController:
     def __init__(self, truck_controller, running_mode):
         self.controller = keyboard.Controller()
-        self.key_press_interval = 0.05  # Reduced from 0.1 for more responsive controls
+        self.key_press_interval = 0.03  # Further reduced from 0.05 for more responsive controls
         self.last_press_time = {}  # Track last press time for each key
+        self.current_pressed_keys = set()  # Track currently pressed keys
 
         # Set up keyboard listener for toggle commands
         self.listener = keyboard.Listener(on_press=self.on_key_press)
@@ -79,7 +99,7 @@ class KeyController:
                 if self.truck_controller.get_drive_status():
                     self.truck_controller.drive_mode_toggle()
                     log.info("Emergency stop activated")
-                    self.press_key('s', 1.0)  # Apply brakes
+                    self.press_key('s', 0.5)  # Shorter brake time but still effective
                     self.running_mode.clear()  # 停止自动驾驶时清除运行模式
             elif key == keyboard.Key.esc:
                 # Exit program
@@ -93,7 +113,7 @@ class KeyController:
         return True  # Continue listening
 
     def press_key(self, key, duration=0.1):
-        """Press and hold a key for a specific duration"""
+        """Press and hold a key for a specific duration with improved responsiveness"""
         current_time = time.time()
 
         # Rate limiting to prevent excessive key presses
@@ -101,9 +121,32 @@ class KeyController:
             return
 
         try:
+            # Release any conflicting keys first (e.g., don't press W and S simultaneously)
+            if key == 'w' and 's' in self.current_pressed_keys:
+                self.controller.release('s')
+                self.current_pressed_keys.remove('s')
+            elif key == 's' and 'w' in self.current_pressed_keys:
+                self.controller.release('w')
+                self.current_pressed_keys.remove('w')
+            elif key == 'a' and 'd' in self.current_pressed_keys:
+                self.controller.release('d')
+                self.current_pressed_keys.remove('d')
+            elif key == 'd' and 'a' in self.current_pressed_keys:
+                self.controller.release('a')
+                self.current_pressed_keys.remove('a')
+
+            # Press the key
             self.controller.press(key)
+            self.current_pressed_keys.add(key)
+
+            # Use shorter sleep for better responsiveness
             time.sleep(duration)
+
+            # Release the key
             self.controller.release(key)
+            if key in self.current_pressed_keys:
+                self.current_pressed_keys.remove(key)
+
             self.last_press_time[key] = current_time
             log.debug(f"Pressed key {key} for {duration}s")
         except Exception as e:
@@ -206,13 +249,20 @@ class ProcessingManager:
             self.action_executor.stop()
             cv2.destroyAllWindows()
 
+    ### modification: Improve _normal_running method to reduce control delays
     def _normal_running(self):
         if self.truck_controller.get_drive_status():
             status = self.get_current_state()
             action = None
-            if status.get('detect_frame'):
-                # 处理图像和状态
+
+            try:
+                # Process state and get action
                 action = self.truck_controller.get_action(status)
+            except Exception as e:
+                log.error(f"Error getting action: {e}")
+                # Fallback to simple forward motion in case of error
+                action = [['w', '0.01']]
+
             if action:
                 self.handle_action_execution(action)
 
