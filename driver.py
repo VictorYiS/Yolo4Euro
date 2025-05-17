@@ -1,5 +1,4 @@
-import pickle
-
+from log import log
 import numpy as np
 
 
@@ -13,6 +12,7 @@ class TruckController():
         self.last_action_time = 0
         self.action_cooldown = 0.05  # seconds between actions
         self.prev_actions = []  # store recent actions for smoothing
+        self.last_taken_frame = None
 
     def get_drive_status(self):
         return self.autodrive_active
@@ -79,6 +79,9 @@ class TruckController():
     def get_action(self, status):
         """Determine driving actions based on lane data and vehicle state"""
         commands = []
+        if self.last_taken_frame == status.get("detect_frame", None) and status.get("detect_frame", None) is not None:
+            # Avoid repeated actions for the same frame
+            return commands
 
         # Extract lane data safely
         ### modification: fixed the lane_status check to avoid array truth value error
@@ -99,6 +102,7 @@ class TruckController():
 
         # If no valid lane data found, perform basic straight driving
         if lane_data is None:
+            self.last_taken_frame = status.get("detect_frame", None)
             # No lane data available, maintain current speed but don't steer
             commands.append(['w', '0.2'])
             return commands
@@ -112,20 +116,19 @@ class TruckController():
         if speed < 5:
             if gear == "N" or gear == "A":
                 # Start moving or keep moving forward slowly
-                commands.append(['w', '0.2'])
+                commands.append(['w', '0.5'])
             # Don't press 's' when stopped to avoid reversing
-            return commands
 
         # 2. Calculate steering action
         steering_action = self.calculate_steering(lane_data)
         if steering_action:
             # Add steering command with appropriate duration
             # Shorter duration for smoother control
-            commands.append([steering_action, '0.05'])
+            commands.append([steering_action, '0.2'])
 
         # 3. Maintain forward motion with controlled acceleration
         # Avoid sudden acceleration changes
-        commands.append(['w', '0.1'])
+        commands.append(['w', '0.2'])
 
         ### modification: Add obstacle avoidance (commented for future implementation)
         # if status.get("car_detect") and len(status["car_detect"]) > 0:
@@ -133,6 +136,7 @@ class TruckController():
         #     # Calculate distance and apply brakes if needed
         #     # commands.append(['s', '0.05'])
         #     pass
+        self.last_taken_frame = status.get("detect_frame", None)
 
         return commands
 

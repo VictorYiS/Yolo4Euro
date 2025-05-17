@@ -99,7 +99,7 @@ class KeyController:
                 if self.truck_controller.get_drive_status():
                     self.truck_controller.drive_mode_toggle()
                     log.info("Emergency stop activated")
-                    self.press_key('s', 0.5)  # Shorter brake time but still effective
+                    self.press_key('s', 0.1)  # Shorter brake time but still effective
                     self.running_mode.clear()  # 停止自动驾驶时清除运行模式
             elif key == keyboard.Key.esc:
                 # Exit program
@@ -188,13 +188,8 @@ class ProcessingManager:
         # 从共享数据结构中读取基本状态
         state = dict(self.shared_data)
 
-        # 处理序列化的objects数据
-        if "car_detect" in state and state["car_detect"]:
-            try:
-                state["car_detect"] = pickle.loads(state["car_detect"])
-            except Exception as e:
-                log.error(f"Error deserializing classes: {e}")
-                state["car_detect"] = None
+        state["car_detect"] = self.get_serialized_data(state, "car_detect")
+        state["detect_frame"] = self.get_serialized_data(state, "detect_frame")
 
         # 处理lane_status数据
         if state.get("lane_status") is True:
@@ -214,10 +209,18 @@ class ProcessingManager:
                 log.error(f"Error deserializing lane_status: {e}")
                 state["lane_status"] = None
 
-        # 为了与dashboard的get_frame_and_status()保持兼容，添加detect_frame字段
-        state["detect_frame"] = True if state.get("frame_updated") else None
-
         return state
+
+    def get_serialized_data(self, state, key):
+        if key in state and state[key]:
+            try:
+                state[key] = pickle.loads(state[key])
+            except Exception as e:
+                log.error(f"Error deserializing classes: {e}")
+                state[key] = None
+
+        return state[key]
+
 
     def clear_event_queues(self):
         """清空事件队列"""

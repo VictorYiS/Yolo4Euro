@@ -66,7 +66,7 @@ def main():
         "fuel": 100.0,
         "lane_status": None,
         "car_detect": None,
-        "frame_updated": False  # 标记是否有新的帧数据
+        "detect_frame": None  # 标记是否有新的帧数据
     })
 
     # 创建共享内存用于传递大型数据（如lane_status可能是numpy数组）
@@ -83,7 +83,7 @@ def main():
     p_brain.start()
 
     # Set update interval (0.5 seconds)
-    update_interval = 0.5
+    update_interval = 0.1
     last_update_time = time.time()
 
     try:
@@ -107,7 +107,7 @@ def main():
                     "fuel": status["fuel"],
                     "gear": status["gear"],
                     "car_detect": pickle.dumps(status["car_detect"]) if status["car_detect"] else None,  # 序列化对象列表
-                    "frame_updated": True if status["detect_frame"] is not None else False
+                    "detect_frame": pickle.dumps(status["detect_frame"]) if status["detect_frame"] else None,
                 }
                 shared_data.update(basic_data)
 

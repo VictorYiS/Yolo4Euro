@@ -1,4 +1,6 @@
 # Simplified truck dashboard
+import time
+
 import grabscreen
 from detector import YOLODetector, LaneDetector
 from window import *
@@ -18,6 +20,7 @@ class TruckDashboard:
         self.lane_mask_detector = LaneDetector()
         self.lane_status = None
         self.car_detect = None
+        self.detect_frame = None
 
     def get_stored_data(self):
         return {
@@ -45,6 +48,7 @@ class TruckDashboard:
 
         roi = game_window.color
         roi_rgb = cv2.cvtColor(roi, cv2.COLOR_RGBA2RGB)
+        frame_time = time.time()
         self.lane_status = self.lane_mask_detector(roi)
 
         # # 车道线检测
@@ -58,7 +62,7 @@ class TruckDashboard:
             self.car_detect, classes = self.vehicle_detector.process_detections(roi_rgb, yolo_results)
         else:
             print("No detection results.")
-        self.detect_frame = roi_rgb
+        self.detect_frame = frame_time
 
     def get_frame_and_status(self):
         # frame = game_window.color
