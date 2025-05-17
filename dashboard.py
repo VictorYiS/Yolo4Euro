@@ -18,6 +18,7 @@ class TruckDashboard:
         self.lane_mask_detector = LaneDetector()
         self.lane_status = None
         self.classes = []
+        self.car_detect = None
 
     def get_stored_data(self):
         return {
@@ -30,6 +31,7 @@ class TruckDashboard:
             "lane_status": self.lane_status,
             "classes": self.classes,
             "detect_frame": self.detect_frame,
+            "car_detect":self.car_detect,
         }
 
     def update_data(self):
@@ -56,6 +58,7 @@ class TruckDashboard:
         yolo_results = self.vehicle_detector.detect(roi_rgb)
         if yolo_results is not None:
             objects, self.classes = self.vehicle_detector.process_detections(roi_rgb, yolo_results)
+            self.car_detect = objects
         else:
             print("No detection results.")
         self.detect_frame = roi_rgb
