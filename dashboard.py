@@ -8,10 +8,11 @@ class TruckDashboard:
     def __init__(self):
         super().__init__()
         self.speed = 0
+        self.setspeed = 0
         self.distance = 0
         self.time = 0
-        # self.gear = 0
-        self.fuel = 100.0
+        self.gear = 'N'
+        self.fuel = 100
         # self.yolo_detector = YOLODetector("models/1000m_736sgz.pt")
         self.vehicle_detector = YOLODetector("models/best.pt")
         self.lane_mask_detector = LaneDetector()
@@ -21,9 +22,10 @@ class TruckDashboard:
     def get_stored_data(self):
         return {
             "speed": self.speed,
+            "setspeed": self.setspeed,
             "distance": self.distance,
             "time": self.time,
-            # "gear": self.gear,
+            "gear": self.gear,
             "fuel": self.fuel,
             "lane_status": self.lane_status,
             "classes": self.classes,
@@ -38,7 +40,7 @@ class TruckDashboard:
         self.distance = self_distance_window.get_status()
         self.time = self_time_window.get_status()
         self.setspeed = self_set_speed.get_status()
-        # self.gear = gear
+        self.gear = self_gear_window.get_status()
         # self.fuel = self_fuel_window.get_status()
 
         roi = game_window.color

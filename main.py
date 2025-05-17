@@ -101,9 +101,11 @@ def main():
                 # 复制基本数据到共享字典
                 basic_data = {
                     "speed": status["speed"],
+                    "setspeed": status["setspeed"],
                     "distance": status["distance"],
                     "time": status["time"],
                     "fuel": status["fuel"],
+                    "gear": status["gear"],
                     "classes": pickle.dumps(status["classes"]) if status["classes"] else [],  # 序列化对象列表
                     "frame_updated": True if status["detect_frame"] is not None else False
                 }
