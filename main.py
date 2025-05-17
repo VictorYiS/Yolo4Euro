@@ -65,7 +65,7 @@ def main():
         "time": 0,
         "fuel": 100.0,
         "lane_status": None,
-        "classes": [],
+        "car_detect": [],
         "frame_updated": False  # 标记是否有新的帧数据
     })
 
@@ -106,7 +106,7 @@ def main():
                     "time": status["time"],
                     "fuel": status["fuel"],
                     "gear": status["gear"],
-                    "classes": pickle.dumps(status["classes"]) if status["classes"] else [],  # 序列化对象列表
+                    "car_detect": pickle.dumps(status["car_detect"]) if status["car_detect"] else [],  # 序列化对象列表
                     "frame_updated": True if status["detect_frame"] is not None else False
                 }
                 shared_data.update(basic_data)

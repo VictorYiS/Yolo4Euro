@@ -163,7 +163,7 @@ class GearWindow(BaseWindow):
         """处理识别的文本以确定档位状态"""
         # 移除空格并标准化
         text = re.sub(r'\s+', '', text).upper()
-        log.debug(f"GearWindow: Processed text: {text}")
+        # log.debug(f"GearWindow: Processed text: {text}")
 
         # 匹配档位模式
         advance_match = re.search(r'A(\d+)', text)
@@ -256,9 +256,9 @@ class NumberWindow(StatusWindow):
                 except ValueError:
                     self.value = 0
                     self.status = 0
-            else:
-                # 如果没有找到数字，保持不变
-                log.debug("NumberWindow: No valid number found.")
+            # else:
+            #     # 如果没有找到数字，保持不变
+            #     log.debug("NumberWindow: No valid number found.")
 
             # 如果识别结果不可靠，尝试备选方法
             if self.value == 0 and self.min_value > 0:
