@@ -27,7 +27,7 @@ class ActionThread(threading.Thread):
         self.running = True
         self.last_action = None
         self.last_action_time = time.time()
-        self.min_action_interval = 0.002  # Minimum time between actions
+        self.min_action_interval = 0.001  # Minimum time between actions
 
     def run(self):
         """Process actions from queues with priority for emergency actions"""
