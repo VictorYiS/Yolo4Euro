@@ -5,14 +5,18 @@ import numpy as np
 class TruckController():
     def __init__(self):
         self.autodrive_active = False
-        ### modification: add control parameters for better stability
         self.prev_error = 0
         self.error_sum = 0
-        self.lane_center_threshold = 20  # px threshold for lane centering
+        self.lane_center_threshold = 20
         self.last_action_time = 0
-        self.action_cooldown = 0.05  # seconds between actions
-        self.prev_actions = []  # store recent actions for smoothing
+        self.action_cooldown = 0.05
+        self.prev_actions = []
         self.last_taken_frame = None
+        # Add previous lane data storage
+        self.prev_lane_data = None
+        self.prev_lane_confidence = 0.0
+        # Target right lane
+        self.target_lane = 1  # 0-indexed, 1 = right lane
 
     def get_drive_status(self):
         return self.autodrive_active
@@ -25,156 +29,182 @@ class TruckController():
         self.prev_actions = []
 
     def calculate_steering(self, lane_data):
-        """Enhanced PID controller for lane centering with robustness for incomplete lane data"""
-        if lane_data is None or not isinstance(lane_data, np.ndarray):
+        """PID controller for right lane following with memory"""
+        if lane_data is None and self.prev_lane_data is None:
             return None, 0
+
+        # Use previous lane data if current is None or has few points
+        current_data_valid = lane_data is not None and isinstance(lane_data, np.ndarray)
+        if not current_data_valid and self.prev_lane_data is not None:
+            # Decay confidence in old data
+            self.prev_lane_confidence *= 0.8
+            if self.prev_lane_confidence < 0.3:
+                return None, 0  # Too uncertain to use old data
+            lane_data = self.prev_lane_data
+        elif current_data_valid:
+            # Store current data for future use
+            self.prev_lane_data = lane_data.copy()
+            self.prev_lane_confidence = 1.0
 
         h, w = lane_data.shape[:2] if len(lane_data.shape) > 2 else lane_data.shape
 
-        # Use multiple scan lines at different heights for redundancy
-        scan_heights = [int(h * 0.6), int(h * 0.7), int(h * 0.8)]
-        valid_centers = []
+        # Look at multiple heights for stability
+        look_ahead_positions = [int(h * 0.6), int(h * 0.7)]
+        all_lane_centers = []
 
-        for y_pos in scan_heights:
+        for y_pos in look_ahead_positions:
             if y_pos >= h:
                 continue
 
             row = lane_data[y_pos, :]
             lane_pixels = np.where(row > 0)[0]
 
-            if len(lane_pixels) >= 2:
-                # Calculate a potential lane center
-                valid_centers.append(np.mean(lane_pixels))
+            if len(lane_pixels) < 5:  # Too few pixels
+                continue
 
-        # If we don't have any valid data across scan lines, use previous steering
-        if not valid_centers:
-            # Gradually reduce previous steering if no new data
-            reduced_steering = self.prev_error * 0.8
+            # Group lane pixels into potential lane lines
+            groups = []
+            current_group = [lane_pixels[0]]
 
+            for i in range(1, len(lane_pixels)):
+                if lane_pixels[i] - lane_pixels[i - 1] < 20:  # Same line if close enough
+                    current_group.append(lane_pixels[i])
+                else:
+                    if len(current_group) >= 3:  # Valid line needs minimum points
+                        groups.append(current_group)
+                    current_group = [lane_pixels[i]]
+
+            if len(current_group) >= 3:
+                groups.append(current_group)
+
+            # Need at least 2 lane lines
+            if len(groups) < 2:
+                continue
+
+            # Sort groups from left to right
+            groups.sort(key=lambda g: np.mean(g))
+
+            # Calculate lane centers (space between lines)
+            lane_centers = []
+            for i in range(len(groups) - 1):
+                center = (np.mean(groups[i]) + np.mean(groups[i + 1])) / 2
+                lane_centers.append(center)
+
+            # If we have lane centers, record them
+            if lane_centers:
+                all_lane_centers.extend(lane_centers)
+
+        # No valid lane centers found
+        if not all_lane_centers:
+            # Use previous error with decay for smooth transition
+            reduced_steering = self.prev_error * 0.7
             if abs(reduced_steering) < self.lane_center_threshold:
                 return None, 0
             elif reduced_steering > 0:
-                return 'd', min(abs(reduced_steering) / 100, 0.05)
+                return 'd', min(abs(reduced_steering) / 150, 0.05)
             else:
-                return 'a', min(abs(reduced_steering) / 100, 0.05)
+                return 'a', min(abs(reduced_steering) / 150, 0.05)
 
-        # Use median filter to reject outliers from multiple scan lines
-        lane_center = np.median(valid_centers)
+        # Find centers sorted left to right
+        all_lane_centers.sort()
+
+        # If we have enough lanes, target the right lane (index 1 for a 2-lane road)
+        # Otherwise use rightmost detected lane
+        target_idx = min(self.target_lane, len(all_lane_centers) - 1)
+        target_center = all_lane_centers[target_idx]
+
+        # Calculate error (distance from target lane center)
         vehicle_center = w // 2
+        error = target_center - vehicle_center
 
-        # Apply exponential moving average for smoother response
-        alpha = 0.7  # Smoothing factor
-        if hasattr(self, 'smoothed_error'):
-            error = alpha * (lane_center - vehicle_center) + (1 - alpha) * self.smoothed_error
-        else:
-            error = lane_center - vehicle_center
+        # Apply smoothing with previous error
+        alpha = 0.7
+        error = alpha * error + (1 - alpha) * self.prev_error
 
-        self.smoothed_error = error
+        # PID control
+        kp = 0.01
+        ki = 0.0005
+        kd = 0.008
 
-        # PID parameters - tune these values
-        kp = 0.01  # Proportional gain
-        ki = 0.0005  # Reduced integral gain to prevent oscillation
-        kd = 0.008  # Increased derivative gain for better damping
-
-        # Anti-windup for integral term to prevent overshoot
+        # Anti-windup for integral term
         max_i_term = 10
         self.error_sum = max(min(self.error_sum + error, max_i_term), -max_i_term)
 
-        # Calculate PID terms
         p_term = kp * error
         i_term = ki * self.error_sum
         d_term = kd * (error - self.prev_error)
         self.prev_error = error
 
-        # Calculate steering command with smoother response
         steering = p_term + i_term + d_term
 
-        # Log stability data for debugging
-        # log(f"Error: {error:.2f}, P: {p_term:.4f}, I: {i_term:.4f}, D: {d_term:.4f}, Steering: {steering:.4f}")
+        # Dynamic steering time based on error magnitude
+        error_magnitude = min(abs(error) / 150, 0.08)  # Softer steering
 
-        # Dynamic steering time based on error magnitude and speed
-        error_magnitude = min(abs(error) / 100, 0.08)
-
-        # Add hysteresis to prevent oscillation near threshold
-        steering_threshold = self.lane_center_threshold
-        if hasattr(self, 'last_steering_dir'):
-            # Increase threshold slightly if we're returning to center to prevent jitter
-            if (self.last_steering_dir > 0 and error < 0) or (self.last_steering_dir < 0 and error > 0):
-                steering_threshold += 5
-
-        if abs(error) < steering_threshold:
-            self.last_steering_dir = 0
+        if abs(error) < self.lane_center_threshold:
             return None, 0
         elif steering > 0:
-            self.last_steering_dir = 1
             return 'd', error_magnitude
         else:
-            self.last_steering_dir = -1
             return 'a', error_magnitude
 
     def get_action(self, status):
-        """Determine driving actions based on lane data and vehicle state with improved stability"""
-        commands = []
-        current_frame = status.get("detect_frame", None)
+        """Determine driving actions with simultaneous key support"""
+        if self.last_taken_frame == status.get("detect_frame", None) and status.get("detect_frame", None) is not None:
+            return []
 
-        # Skip duplicate frame processing
-        if self.last_taken_frame == current_frame and current_frame is not None:
-            return commands
-
-        # Extract lane data with fallback mechanisms
+        # Extract lane data safely
         lane_data = self.extract_lane_data(status)
 
-        # Track data quality for adaptive control
-        data_quality = self.assess_lane_data_quality(lane_data)
-
-        # Adaptive control based on data quality
-        steering_action, steering_duration = self.calculate_steering(lane_data)
-
-        # Store actions for smoothing
-        if steering_action:
-            # Add to history for temporal smoothing
-            self.prev_actions.append((steering_action, float(steering_duration)))
-            if len(self.prev_actions) > 5:
-                self.prev_actions.pop(0)
-
-            # Apply temporal smoothing for smoother transitions
-            if len(self.prev_actions) >= 3:
-                # Recent actions have more weight
-                weights = [0.1, 0.2, 0.3, 0.5, 0.7][-len(self.prev_actions):]
-                weighted_duration = sum(w * d for w, (_, d) in zip(weights, self.prev_actions)) / sum(weights)
-                steering_duration = min(weighted_duration, 0.08)  # Cap at 0.08s
-
-            # Add steering command with smoothed duration
-            commands.append([steering_action, f'{steering_duration:.2f}'])
-
-        # Adaptive acceleration based on current conditions
-        speed = status.get("speed", 0)
-        remaining_duration = min(0.1 - (steering_duration if steering_action else 0), 0.06)
-
-        # Reduce acceleration when lane data quality is poor
-        if data_quality < 0.5:
-            remaining_duration *= 0.7  # Slow down when uncertain
-
-        # Adaptive acceleration command
-        if speed < 5:
-            commands.append(['w', f'{remaining_duration:.2f}'])
-        else:
-            acceleration_factor = max(0.5, min(1.0, 10.0 / speed))  # Reduce acceleration at higher speeds
-            commands.append(['w', f'{remaining_duration * acceleration_factor:.2f}'])
-
-        # Process traffic signals with priority
+        # Check for traffic lights first as they have priority
         if status.get("traffic_light") and len(status["traffic_light"]) > 0:
             traffic_cmd = self.process_traffic_light(status["traffic_light"])
             if traffic_cmd:
-                # Traffic commands take priority
-                commands = [traffic_cmd]
+                # Format: [['direction:duration', 'movement:duration']]
+                return [[f'none:{traffic_cmd[1]}', f'{traffic_cmd[0]}:{traffic_cmd[1]}']]
 
-        self.last_taken_frame = current_frame
-        return commands
+        # Calculate steering with memory of previous lane data
+        steering_action, steering_duration = self.calculate_steering(lane_data)
+
+        # Implement action smoothing
+        if steering_action:
+            # Keep history of recent actions
+            self.prev_actions.append((steering_action, steering_duration))
+            if len(self.prev_actions) > 3:
+                self.prev_actions.pop(0)
+
+            # Smooth duration if we have history
+            if len(self.prev_actions) >= 2:
+                # Average recent durations, weighted toward current
+                total_duration = sum(d for _, d in self.prev_actions[-2:])
+                steering_duration = total_duration / 2
+
+        # Calculate acceleration based on speed
+        speed = status.get("speed", 0)
+
+        # Adjust acceleration duration based on speed
+        if speed < 5:
+            accel_duration = max(0.02, min(0.1, 0.06))
+        else:
+            # Reduce acceleration at higher speeds
+            accel_factor = max(0.5, min(1.0, 15.0 / speed))
+            accel_duration = max(0.02, min(0.1, 0.06 * accel_factor))
+
+        # Format for simultaneous key presses
+        if steering_action:
+            # Both steering and acceleration
+            action = [[f'{steering_action}:{steering_duration:.2f}', f'w:{accel_duration:.2f}']]
+        else:
+            # Only acceleration, no steering
+            action = [[f'none:{accel_duration:.2f}', f'w:{accel_duration:.2f}']]
+
+        self.last_taken_frame = status.get("detect_frame", None)
+        return action
 
     def extract_lane_data(self, status):
         """More robust extraction of lane data with multiple fallbacks"""
         lane_data = None
+        speed_data = status.get("speed_data", None)
+        set_speed_data = status.get("set_speed_data", None)
 
         # Try all possible ways to extract lane data
         if status.get("lane_status") is not None:
@@ -187,6 +217,11 @@ class TruckController():
 
         if lane_data is None and "lane_data" in status:
             lane_data = status["lane_data"]
+
+        if speed_data is not None:
+            log.debug(f"Speed data: {speed_data}")
+        if set_speed_data is not None:
+            log.debug(f"Set speed data: {set_speed_data}")
 
         return lane_data
 
@@ -220,17 +255,16 @@ class TruckController():
         return sum(quality_scores) / len(quality_scores) if quality_scores else 0.0
 
     def process_traffic_light(self, traffic_light_data):
-        """处理YOLO检测到的红绿灯数据，返回是否需要停车"""
-        # 如果data数组中有Red的字符串则返回ImmediateStop，有Green则返回启动，Yellow则减速
+        """Process YOLO-detected traffic light data and return action"""
         for data in traffic_light_data:
             if "Red" in data:
-                return ['s', '0.05']  # 停车0.05秒
+                return ['s', '0.05']  # Stop for 0.05 seconds
             elif "Green" in data:
-                return ['w', '0.05']
+                return ['w', '0.05']  # Proceed for 0.05 seconds
             elif "Yellow" in data:
-                return ['s', '0.03']  # 减速并间隔0.03秒，减少黄灯时的减速时间
+                return ['s', '0.03']  # Slow down for 0.03 seconds
 
-        return None  # 默认不操作
+        return None  # No action by default
 
     def debug_command_save(self, command, frame):
         with open("debug_images/debug_commands.txt", "a") as f:

@@ -51,13 +51,8 @@ class TruckDashboard:
         frame_time = time.time()
         self.lane_status = self.lane_mask_detector(roi)
         print("Lane status:", self.lane_status["lane_data"].shape)
+        # cv2.imwrite("debug_images/roi_rgb_{}.png".format(frame_time), roi_rgb)
         # self.lane_status["lane_image"].save("debug_images/frame_{}.png".format(frame_time))
-
-        # # 车道线检测
-        # self.lane_status = self.lane_mask_detector.detect(roi)
-        # if self.lane_status[1] is None or not np.any(self.lane_status[1]):
-        #     print("Warning: Lane mask is empty or all zeros")
-
 
         yolo_results = self.vehicle_detector.detect(roi_rgb)
         if yolo_results is not None:
