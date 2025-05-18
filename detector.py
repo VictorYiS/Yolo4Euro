@@ -1,239 +1,108 @@
 import os
-import time
 from datetime import datetime
 
 import cv2
 import numpy as np
-import tensorflow as tf
+import torch
 from PIL import Image
-from tensorflow.keras.models import load_model
-from tensorflow.keras.models import load_model
 from ultralytics import YOLO
 
 from log import log
+from train_e_net import ENet  # Import ENet class
 
 
 class LaneDetector:
     """
-    Lane detection class that uses a U-Net model to detect lane lines in images.
+    Lane detection class that uses an E-Net model to detect lane lines in images.
     """
 
-    def __init__(self, model_path=None, use_gpu=True):
+    def __init__(self, model_path='models/ENET.pth', use_gpu=True):
         """
-        Initialize the lane detector with a model.
+        Initialize the lane detector with the E-Net model.
 
         Args:
-            model_path: Path to the lane detection model. If None, tries default paths.
+            model_path: Path to the E-Net model weights
             use_gpu: Whether to use GPU for inference
         """
-        # Configure GPU usage
-        if use_gpu:
-            os.environ["CUDA_VISIBLE_DEVICES"] = "0"  # Use GPU 0
-        else:
-            os.environ["CUDA_VISIBLE_DEVICES"] = "-1"  # Force CPU
+        # Configure device
+        self.device = torch.device('cuda' if use_gpu and torch.cuda.is_available() else 'cpu')
 
-        # Load the model with proper error handling
-        self.model = self._load_model_safely(model_path)
+        # Initialize E-Net model
+        self.model = ENet(2, 4)  # Binary and instance segmentation
 
-    def _load_model_safely(self, model_path):
+        # Load model weights
+        self.model.load_state_dict(torch.load(model_path, map_location=self.device))
+        self.model.to(self.device)
+        self.model.eval()  # Set to evaluation mode
+
+        print(f"E-Net model loaded from {model_path} using {self.device}")
+
+    def process_image(self, image_path=None, image_array=None, output_size=(1000, 500)):
         """
-        Safely load the model with proper error handling and IO device configuration.
-        """
-        # Define possible model paths to try
-        if model_path:
-            paths_to_try = [model_path]
-        else:
-            paths_to_try = [
-                '../LaneLineLableModels/run_allepoch-5425-val_loss-0.0606-val_acc-0.9794.hdf5',
-                'LaneLineLableModels/run_allepoch-5425-val_loss-0.0606-val_acc-0.9794.hdf5'
-            ]
-
-        # Add absolute paths if relative paths don't work
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        for rel_path in paths_to_try.copy():
-            abs_path = os.path.join(current_dir, rel_path)
-            if abs_path not in paths_to_try:
-                paths_to_try.append(abs_path)
-
-        # Try loading with different options
-        for path in paths_to_try:
-            if not os.path.exists(path):
-                continue
-
-            try:
-                # Try with default options
-                return load_model(path)
-            except Exception as e1:
-                print(f"First attempt to load model failed: {e1}")
-                try:
-                    # Try with IO device options
-                    options = tf.saved_model.LoadOptions(
-                        experimental_io_device='/job:localhost'
-                    )
-                    return tf.keras.models.load_model(path, options=options)
-                except Exception as e2:
-                    print(f"Second attempt with IO device options failed: {e2}")
-                    continue
-
-        raise Exception("Failed to load model from any of the paths. Please provide a valid model path.")
-
-    def process_image(self, image_path=None, image_array=None, resize=(400, 400)):
-        """
-        处理单张图像以检测车道线。
+        Process an image to detect lane lines with E-Net.
 
         Args:
-            image_path: 图像文件路径
-            image_array: 图像的numpy数组(RGB)
-            resize: 处理前调整图像大小的元组(宽度,高度)
+            image_path: Path to image file
+            image_array: Image as numpy array (RGB)
+            output_size: Size to stretch output (width, height)
 
         Returns:
-            包含原始图像、处理后的车道线检测图像和车道线数据的字典
+            Dictionary with original image, processed lane image and data
         """
         try:
+            # Load and prepare image
             if image_path is not None:
-                # 检查文件扩展名
-                _, ext = os.path.splitext(image_path)
-                if not ext.lower() in ['.png', '.jpg', '.jpeg', '.bmp', '.gif']:
-                    raise ValueError(f"不支持的文件扩展名: {ext}")
-
-                # 从路径加载图像
                 image = Image.open(image_path).convert('RGB')
+                img_array = np.array(image)
             elif image_array is not None:
-                # 使用提供的图像数组
-                # 确保图像是RGB格式(OpenCV通常使用BGR)
-                if len(image_array.shape) == 3 and image_array.shape[2] == 3:
-                    # 如果已经是RGB，直接使用
-                    image = Image.fromarray(image_array.astype('uint8'))
-                else:
-                    raise ValueError("提供的图像数组格式不正确，应为RGB")
+                img_array = image_array
+                image = Image.fromarray(img_array.astype('uint8'))
             else:
-                raise ValueError("必须提供image_path或image_array")
+                raise ValueError("Must provide either image_path or image_array")
 
-            # 调整图像大小
-            resized_image = image.resize(resize)
+            # Convert to grayscale and resize to model input size (512x256)
+            if len(img_array.shape) == 3:
+                gray_img = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+            else:
+                # Already grayscale
+                gray_img = img_array
 
-            # 准备模型输入
-            model_input = np.array(resized_image)[None, ...]
+            resized_img = cv2.resize(gray_img, (512, 256))
+            # Add channel dimension
+            model_input = resized_img[..., np.newaxis]
 
-            # 安全获取车道线预测
-            try:
-                lane_predictions = self.model(model_input)
-            except Exception as e:
-                print(f"模型推理过程中出错: {e}")
-                # 如果模型失败则返回空结果
-                return {
-                    'original_image': image,
-                    'resized_image': resized_image,
-                    'lane_image': None,
-                    'lane_data': None,
-                    'error': str(e)
-                }
+            # Convert to tensor
+            input_tensor = torch.from_numpy(model_input).float().permute(2, 0, 1)
+            input_tensor = input_tensor.unsqueeze(0).to(self.device)
 
-            # 将预测转换为车道线图
-            lanes = np.argmax(lane_predictions[0, ...], axis=-1) * 255
+            # Get model predictions
+            with torch.no_grad():
+                binary_logits, instance_logits = self.model(input_tensor)
 
-            # 从车道线数据创建图像
-            lane_image = Image.fromarray(lanes.astype('uint8'), 'L')
+            # Process predictions
+            binary_seg = torch.argmax(binary_logits, dim=1).squeeze().cpu().numpy()
+            instance_seg = torch.argmax(instance_logits, dim=1).squeeze().cpu().numpy()
+
+            # Ensure arrays are the correct type before resizing
+            binary_seg_uint8 = binary_seg.astype(np.uint8) * 255
+            instance_seg_uint8 = instance_seg.astype(np.uint8)
+
+            # Resize outputs to desired dimensions
+            binary_output = cv2.resize(binary_seg_uint8, output_size, interpolation=cv2.INTER_NEAREST)
+            instance_output = cv2.resize(instance_seg_uint8, output_size, interpolation=cv2.INTER_NEAREST)
+
+            # Create lane image from binary segmentation
+            lane_image = Image.fromarray(binary_output, 'L')
 
             return {
                 'original_image': image,
-                'resized_image': resized_image,
                 'lane_image': lane_image,
-                'lane_data': lanes
+                'lane_data': binary_output,
+                'instance_data': instance_output
             }
         except Exception as e:
-            print(f"处理图像时出错: {e}")
+            print(f"Error processing image: {e}")
             return {'error': str(e)}
-
-    def process_folder(self, folder_path, output_folder=None):
-        """
-        Process all images in a folder.
-
-        Args:
-            folder_path: Path to the folder containing images
-            output_folder: Path to save processed images (optional)
-
-        Returns:
-            List of dictionaries with original and processed images
-        """
-        # Check if folder exists
-        if not os.path.exists(folder_path):
-            raise ValueError(f"Folder does not exist: {folder_path}")
-
-        # Get all image files in the folder
-        image_files = [f for f in os.listdir(folder_path)
-                       if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.gif'))]
-        image_files.sort()
-
-        if not image_files:
-            print(f"No image files found in {folder_path}")
-            return []
-
-        results = []
-
-        for filename in image_files:
-            try:
-                image_path = os.path.join(folder_path, filename)
-                result = self.process_image(image_path=image_path)
-
-                # Skip if processing failed
-                if 'error' in result:
-                    print(f"Skipping {filename}: {result['error']}")
-                    continue
-
-                results.append(result)
-
-                # Save processed image if output folder is specified
-                if output_folder and result.get('lane_image'):
-                    if not os.path.exists(output_folder):
-                        os.makedirs(output_folder)
-
-                    # Save lane image
-                    output_path = os.path.join(output_folder, f"lane_{filename}")
-                    result['lane_image'].save(output_path)
-            except Exception as e:
-                print(f"Error processing {filename}: {e}")
-
-        return results
-
-    def process_numpy_batch(self, batch_images):
-        """
-        Process a batch of images as numpy arrays.
-
-        Args:
-            batch_images: Numpy array of shape (batch_size, height, width, channels)
-
-        Returns:
-            Numpy array of lane predictions
-        """
-        try:
-            # Check if input is a numpy array
-            if not isinstance(batch_images, np.ndarray):
-                raise TypeError("batch_images must be a numpy array")
-
-            # Ensure the input has 4 dimensions (batch, height, width, channels)
-            if len(batch_images.shape) != 4:
-                raise ValueError("batch_images must have shape (batch_size, height, width, channels)")
-
-            # Resize images if needed
-            resized_batch = []
-            for img in batch_images:
-                pil_img = Image.fromarray(img)
-                resized = pil_img.resize((400, 400))
-                resized_batch.append(np.array(resized))
-
-            resized_batch = np.array(resized_batch)
-
-            # Get lane predictions
-            lane_predictions = self.model(resized_batch)
-
-            # Convert predictions to lane maps
-            lanes = np.argmax(lane_predictions, axis=-1) * 255
-
-            return lanes
-        except Exception as e:
-            print(f"Error processing batch: {e}")
-            return None
 
     def __call__(self, image_or_path):
         """

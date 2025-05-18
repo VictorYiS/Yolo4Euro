@@ -28,7 +28,7 @@ class TruckController():
     def calculate_steering(self, lane_data):
         """PID controller for lane centering"""
         if lane_data is None or not isinstance(lane_data, np.ndarray):
-            return None
+            return None, 0
 
         # Calculate lane center and error
         # Assuming lane_data provides information about lane position
@@ -43,7 +43,7 @@ class TruckController():
 
         if len(lane_pixels) < 2:
             # Not enough lane pixels detected
-            return None
+            return None, 0
 
         # Calculate lane center and vehicle position
         lane_center = np.mean(lane_pixels)
@@ -67,14 +67,17 @@ class TruckController():
         # Calculate steering command
         steering = p_term + i_term + d_term
 
+        # 计算偏移量的绝对值，用于动态调整转向时间
+        error_magnitude = min(abs(error) / 100, 0.08)  # 最大转向时间为0.08秒
+
         # Determine steering action
         if abs(error) < self.lane_center_threshold:
             # Within threshold, no steering needed
-            return None
+            return None, 0
         elif steering > 0:
-            return 'd'  # Turn right
+            return 'd', error_magnitude  # Turn right with dynamic duration
         else:
-            return 'a'  # Turn left
+            return 'a', error_magnitude  # Turn left with dynamic duration
 
     def get_action(self, status):
         """Determine driving actions based on lane data and vehicle state"""
@@ -100,44 +103,42 @@ class TruckController():
             elif isinstance(status["lane_status"], np.ndarray):
                 lane_data = status["lane_status"]
 
-        # If no valid lane data found, perform basic straight driving
-        if lane_data is None:
-            self.last_taken_frame = status.get("detect_frame", None)
-            # No lane data available, maintain current speed but don't steer
-            commands.append(['w', '0.2'])
-            return commands
+        # 计算总命令时长
+        total_duration = 0.0
+        max_duration = 0.1  # 最大总时长限制为0.1秒
 
+        # 2. 计算转向动作和时长
+        steering_action, steering_duration = self.calculate_steering(lane_data)
+
+        if steering_action:
+            # 添加转向命令，使用动态计算的持续时间
+            commands.append([steering_action, f'{steering_duration:.2f}'])
+            total_duration += steering_duration
+
+        # 剩余时间用于加速
+        remaining_duration = max(0.02, min(max_duration - total_duration, 0.06))
+
+        # 3. 确保前进动作
         speed = status.get("speed", 0)
         gear = status.get("gear", "N")
 
-        ### modification: implement basic driving logic
-
-        # 1. Handle initial acceleration from stop
+        # 根据速度调整加速强度
         if speed < 5:
-            if gear == "N" or gear == "A":
-                # Start moving or keep moving forward slowly
-                commands.append(['w', '0.5'])
-            # Don't press 's' when stopped to avoid reversing
+            # 低速时加大加速度
+            commands.append(['w', f'{remaining_duration:.2f}'])
+        else:
+            # 高速时使用较小的加速度维持
+            commands.append(['w', f'{remaining_duration * 0.7:.2f}'])
 
-        # 2. Calculate steering action
-        steering_action = self.calculate_steering(lane_data)
-        if steering_action:
-            # Add steering command with appropriate duration
-            # Shorter duration for smoother control
-            commands.append([steering_action, '0.2'])
+        # 处理交通灯
+        if status.get("traffic_light") and len(status["traffic_light"]) > 0:
+            traffic_cmd = self.process_traffic_light(status["traffic_light"])
+            if traffic_cmd:
+                # 如果需要处理交通灯，替换或添加对应命令
+                commands = [traffic_cmd]
 
-        # 3. Maintain forward motion with controlled acceleration
-        # Avoid sudden acceleration changes
-        commands.append(['w', '0.2'])
-
-        ### modification: Add obstacle avoidance (commented for future implementation)
-        # if status.get("car_detect") and len(status["car_detect"]) > 0:
-        #     # Handle obstacle detection and braking
-        #     # Calculate distance and apply brakes if needed
-        #     # commands.append(['s', '0.05'])
-        #     pass
         self.last_taken_frame = status.get("detect_frame", None)
-
+        # self.debug_command_save(commands, status.get("detect_frame", None))
         return commands
 
     def process_traffic_light(self, traffic_light_data):
@@ -149,6 +150,10 @@ class TruckController():
             elif "Green" in data:
                 return ['w', '0.05']
             elif "Yellow" in data:
-                return ['s', '0.1']  # 减速并间隔0.1秒
+                return ['s', '0.03']  # 减速并间隔0.03秒，减少黄灯时的减速时间
 
         return None  # 默认不操作
+
+    def debug_command_save(self, command, frame):
+        with open("debug_images/debug_commands.txt", "a") as f:
+            f.write(f"Command: {command}, Frame: {frame}\n")

@@ -498,7 +498,7 @@ self_set_speed = NumberWindow(*convert_coordinates(1498,783,1520,799))
 self_gear_window = GearWindow(1601, 700, 1625, 729)
 
 roi_x_size = 1000  # ROI的宽度和高度（以游戏窗口中心为中心的矩形）
-roi_y_size = 1200  # ROI的宽度和高度（以游戏窗口中心为中心的矩形）
+roi_y_size = 500  # ROI的宽度和高度（以游戏窗口中心为中心的矩形）
 start_xy = (
     game_width // 2 - roi_x_size // 2,
     game_height // 2 - roi_y_size // 2 - 100,

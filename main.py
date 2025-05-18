@@ -70,7 +70,7 @@ def main():
     })
 
     # 创建共享内存用于传递大型数据（如lane_status可能是numpy数组）
-    lane_status_shape = (720, 1280, 3)  # 假设的最大尺寸，根据实际情况调整
+    lane_status_shape = (1200, 600, 3)  # 假设的最大尺寸，根据实际情况调整
     # 修复: 将numpy.int32转换为Python int
     buffer_size = int(np.prod(lane_status_shape) * 4)  # 4字节浮点数
     lane_status_buffer = mp.Array('B', buffer_size)

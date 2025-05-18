@@ -46,10 +46,11 @@ class TruckDashboard:
         self.gear = self_gear_window.get_status()
         # self.fuel = self_fuel_window.get_status()
 
-        roi = game_window.color
+        roi = battle_roi_window.color
         roi_rgb = cv2.cvtColor(roi, cv2.COLOR_RGBA2RGB)
         frame_time = time.time()
         self.lane_status = self.lane_mask_detector(roi)
+        # self.lane_status["lane_image"].save("debug_images/frame_{}.png".format(frame_time))
 
         # # 车道线检测
         # self.lane_status = self.lane_mask_detector.detect(roi)

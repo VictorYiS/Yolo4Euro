@@ -176,6 +176,7 @@ models/
 LaneLineLableModels/
 logs/
 detections/
+debug_images1/
 debug_images/
 data_object/
 data_road/
