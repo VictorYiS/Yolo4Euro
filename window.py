@@ -500,8 +500,8 @@ self_gear_window = GearWindow(1601, 700, 1625, 729)
 roi_x_size = 1000  # ROI的宽度和高度（以游戏窗口中心为中心的矩形）
 roi_y_size = 500  # ROI的宽度和高度（以游戏窗口中心为中心的矩形）
 start_xy = (
-    game_width // 2 - roi_x_size // 2,
-    game_height // 2 - roi_y_size // 2 - 100,
+    game_width // 2 - roi_x_size // 2 + 50,
+    game_height // 2 - roi_y_size // 2 - 50,
 )  # ROI的起始坐标 (x, y)
 
 
