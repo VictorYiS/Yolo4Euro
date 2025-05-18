@@ -24,122 +24,200 @@ class TruckController():
         self.error_sum = 0
         self.prev_actions = []
 
-    ### modification: implement PID controller for lane following
     def calculate_steering(self, lane_data):
-        """PID controller for lane centering"""
+        """Enhanced PID controller for lane centering with robustness for incomplete lane data"""
         if lane_data is None or not isinstance(lane_data, np.ndarray):
             return None, 0
 
-        # Calculate lane center and error
-        # Assuming lane_data provides information about lane position
         h, w = lane_data.shape[:2] if len(lane_data.shape) > 2 else lane_data.shape
 
-        # Define region of interest - look ahead for smoother steering
-        look_ahead_y = int(h * 0.6)  # Look at 60% up the image for better anticipation
+        # Use multiple scan lines at different heights for redundancy
+        scan_heights = [int(h * 0.6), int(h * 0.7), int(h * 0.8)]
+        valid_centers = []
 
-        # Find lane markings in the ROI
-        row = lane_data[look_ahead_y, :]
-        lane_pixels = np.where(row > 0)[0]
+        for y_pos in scan_heights:
+            if y_pos >= h:
+                continue
 
-        if len(lane_pixels) < 2:
-            # Not enough lane pixels detected
-            return None, 0
+            row = lane_data[y_pos, :]
+            lane_pixels = np.where(row > 0)[0]
 
-        # Calculate lane center and vehicle position
-        lane_center = np.mean(lane_pixels)
+            if len(lane_pixels) >= 2:
+                # Calculate a potential lane center
+                valid_centers.append(np.mean(lane_pixels))
+
+        # If we don't have any valid data across scan lines, use previous steering
+        if not valid_centers:
+            # Gradually reduce previous steering if no new data
+            reduced_steering = self.prev_error * 0.8
+
+            if abs(reduced_steering) < self.lane_center_threshold:
+                return None, 0
+            elif reduced_steering > 0:
+                return 'd', min(abs(reduced_steering) / 100, 0.05)
+            else:
+                return 'a', min(abs(reduced_steering) / 100, 0.05)
+
+        # Use median filter to reject outliers from multiple scan lines
+        lane_center = np.median(valid_centers)
         vehicle_center = w // 2
 
-        # Calculate error (positive: need to turn right, negative: need to turn left)
-        error = lane_center - vehicle_center
+        # Apply exponential moving average for smoother response
+        alpha = 0.7  # Smoothing factor
+        if hasattr(self, 'smoothed_error'):
+            error = alpha * (lane_center - vehicle_center) + (1 - alpha) * self.smoothed_error
+        else:
+            error = lane_center - vehicle_center
+
+        self.smoothed_error = error
 
         # PID parameters - tune these values
         kp = 0.01  # Proportional gain
-        ki = 0.001  # Integral gain
-        kd = 0.005  # Derivative gain
+        ki = 0.0005  # Reduced integral gain to prevent oscillation
+        kd = 0.008  # Increased derivative gain for better damping
+
+        # Anti-windup for integral term to prevent overshoot
+        max_i_term = 10
+        self.error_sum = max(min(self.error_sum + error, max_i_term), -max_i_term)
 
         # Calculate PID terms
         p_term = kp * error
-        self.error_sum += error
         i_term = ki * self.error_sum
         d_term = kd * (error - self.prev_error)
         self.prev_error = error
 
-        # Calculate steering command
+        # Calculate steering command with smoother response
         steering = p_term + i_term + d_term
 
-        # 计算偏移量的绝对值，用于动态调整转向时间
-        error_magnitude = min(abs(error) / 100, 0.08)  # 最大转向时间为0.08秒
+        # Log stability data for debugging
+        # log(f"Error: {error:.2f}, P: {p_term:.4f}, I: {i_term:.4f}, D: {d_term:.4f}, Steering: {steering:.4f}")
 
-        # Determine steering action
-        if abs(error) < self.lane_center_threshold:
-            # Within threshold, no steering needed
+        # Dynamic steering time based on error magnitude and speed
+        error_magnitude = min(abs(error) / 100, 0.08)
+
+        # Add hysteresis to prevent oscillation near threshold
+        steering_threshold = self.lane_center_threshold
+        if hasattr(self, 'last_steering_dir'):
+            # Increase threshold slightly if we're returning to center to prevent jitter
+            if (self.last_steering_dir > 0 and error < 0) or (self.last_steering_dir < 0 and error > 0):
+                steering_threshold += 5
+
+        if abs(error) < steering_threshold:
+            self.last_steering_dir = 0
             return None, 0
         elif steering > 0:
-            return 'd', error_magnitude  # Turn right with dynamic duration
+            self.last_steering_dir = 1
+            return 'd', error_magnitude
         else:
-            return 'a', error_magnitude  # Turn left with dynamic duration
+            self.last_steering_dir = -1
+            return 'a', error_magnitude
 
     def get_action(self, status):
-        """Determine driving actions based on lane data and vehicle state"""
+        """Determine driving actions based on lane data and vehicle state with improved stability"""
         commands = []
-        if self.last_taken_frame == status.get("detect_frame", None) and status.get("detect_frame", None) is not None:
-            # Avoid repeated actions for the same frame
+        current_frame = status.get("detect_frame", None)
+
+        # Skip duplicate frame processing
+        if self.last_taken_frame == current_frame and current_frame is not None:
             return commands
 
-        # Extract lane data safely
-        ### modification: fixed the lane_status check to avoid array truth value error
-        lane_data = None
-        if status.get("lane_status") is not None:
-            # Check if lane_status is a dictionary with lane_data key
-            if isinstance(status["lane_status"], dict) and "lane_data" in status["lane_status"]:
-                lane_data = status["lane_status"]["lane_data"]
-            # Or if lane_data is directly in the output of detector
-            elif "lane_data" in status:
-                lane_data = status["lane_data"]
-            # Or if lane_status directly contains lane_data (from LaneDetector)
-            elif hasattr(status["lane_status"], "get") and status["lane_status"].get("lane_data") is not None:
-                lane_data = status["lane_status"].get("lane_data")
-            # If lane_status itself is the data
-            elif isinstance(status["lane_status"], np.ndarray):
-                lane_data = status["lane_status"]
+        # Extract lane data with fallback mechanisms
+        lane_data = self.extract_lane_data(status)
 
-        # 计算总命令时长
-        total_duration = 0.0
-        max_duration = 0.1  # 最大总时长限制为0.1秒
+        # Track data quality for adaptive control
+        data_quality = self.assess_lane_data_quality(lane_data)
 
-        # 2. 计算转向动作和时长
+        # Adaptive control based on data quality
         steering_action, steering_duration = self.calculate_steering(lane_data)
 
+        # Store actions for smoothing
         if steering_action:
-            # 添加转向命令，使用动态计算的持续时间
+            # Add to history for temporal smoothing
+            self.prev_actions.append((steering_action, float(steering_duration)))
+            if len(self.prev_actions) > 5:
+                self.prev_actions.pop(0)
+
+            # Apply temporal smoothing for smoother transitions
+            if len(self.prev_actions) >= 3:
+                # Recent actions have more weight
+                weights = [0.1, 0.2, 0.3, 0.5, 0.7][-len(self.prev_actions):]
+                weighted_duration = sum(w * d for w, (_, d) in zip(weights, self.prev_actions)) / sum(weights)
+                steering_duration = min(weighted_duration, 0.08)  # Cap at 0.08s
+
+            # Add steering command with smoothed duration
             commands.append([steering_action, f'{steering_duration:.2f}'])
-            total_duration += steering_duration
 
-        # 剩余时间用于加速
-        remaining_duration = max(0.02, min(max_duration - total_duration, 0.06))
-
-        # 3. 确保前进动作
+        # Adaptive acceleration based on current conditions
         speed = status.get("speed", 0)
-        gear = status.get("gear", "N")
+        remaining_duration = min(0.1 - (steering_duration if steering_action else 0), 0.06)
 
-        # 根据速度调整加速强度
+        # Reduce acceleration when lane data quality is poor
+        if data_quality < 0.5:
+            remaining_duration *= 0.7  # Slow down when uncertain
+
+        # Adaptive acceleration command
         if speed < 5:
-            # 低速时加大加速度
             commands.append(['w', f'{remaining_duration:.2f}'])
         else:
-            # 高速时使用较小的加速度维持
-            commands.append(['w', f'{remaining_duration * 0.7:.2f}'])
+            acceleration_factor = max(0.5, min(1.0, 10.0 / speed))  # Reduce acceleration at higher speeds
+            commands.append(['w', f'{remaining_duration * acceleration_factor:.2f}'])
 
-        # 处理交通灯
+        # Process traffic signals with priority
         if status.get("traffic_light") and len(status["traffic_light"]) > 0:
             traffic_cmd = self.process_traffic_light(status["traffic_light"])
             if traffic_cmd:
-                # 如果需要处理交通灯，替换或添加对应命令
+                # Traffic commands take priority
                 commands = [traffic_cmd]
 
-        self.last_taken_frame = status.get("detect_frame", None)
-        # self.debug_command_save(commands, status.get("detect_frame", None))
+        self.last_taken_frame = current_frame
         return commands
+
+    def extract_lane_data(self, status):
+        """More robust extraction of lane data with multiple fallbacks"""
+        lane_data = None
+
+        # Try all possible ways to extract lane data
+        if status.get("lane_status") is not None:
+            if isinstance(status["lane_status"], dict) and "lane_data" in status["lane_status"]:
+                lane_data = status["lane_status"]["lane_data"]
+            elif isinstance(status["lane_status"], np.ndarray):
+                lane_data = status["lane_status"]
+            elif hasattr(status["lane_status"], "get"):
+                lane_data = status["lane_status"].get("lane_data")
+
+        if lane_data is None and "lane_data" in status:
+            lane_data = status["lane_data"]
+
+        return lane_data
+
+    def assess_lane_data_quality(self, lane_data):
+        """Assess the quality/completeness of lane data"""
+        if lane_data is None or not isinstance(lane_data, np.ndarray):
+            return 0.0
+
+        h, w = lane_data.shape[:2] if len(lane_data.shape) > 2 else lane_data.shape
+
+        # Check multiple scan lines to assess overall quality
+        quality_scores = []
+        scan_heights = [int(h * 0.6), int(h * 0.7), int(h * 0.8)]
+
+        for y_pos in scan_heights:
+            if y_pos >= h:
+                continue
+
+            row = lane_data[y_pos, :]
+            lane_pixels = np.where(row > 0)[0]
+
+            # Score based on number of detected lane pixels
+            if len(lane_pixels) == 0:
+                quality_scores.append(0.0)
+            else:
+                # Higher score for more pixels, max at about 30 pixels
+                score = min(1.0, len(lane_pixels) / 30.0)
+                quality_scores.append(score)
+
+        # Overall quality is average of scan line qualities
+        return sum(quality_scores) / len(quality_scores) if quality_scores else 0.0
 
     def process_traffic_light(self, traffic_light_data):
         """处理YOLO检测到的红绿灯数据，返回是否需要停车"""

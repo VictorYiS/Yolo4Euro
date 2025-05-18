@@ -4,7 +4,6 @@ import win32gui
 from log import log
 
 EURO_TITLE = "Euro Truck Simulator 2"  # 窗口标题
-WUKONG_CLASS_NAME = "UnrealWindow"  # 也可以使用类名去寻找窗口 getWindowsWithClass
 
 
 def get_window_position(title):
