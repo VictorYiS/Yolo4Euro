@@ -366,6 +366,11 @@ class TruckController():
         if car_list and isinstance(lane_status, dict):
             categorized = self.categorize_cars_by_lane(lane_status, car_list)
             for obj, side in categorized:
+                left_cars   = [obj for obj, side in categorized if side == "left"]
+                middle_cars = [obj for obj, side in categorized if side == "middle"]
+                right_cars  = [obj for obj, side in categorized if side == "right"]
+
+                print("******************")
                 print(
                     f"[DEBUG] {obj['class_name']} bbox={obj['bbox']} → lane_side={side}"
                 )
