@@ -472,11 +472,19 @@ class ProcessingManager:
         try:
             # Get action from truck controller
             action = self.truck_controller.get_action(status)
+            # initial_action = action.copy()
 
             # Ensure there's always some forward momentum at low speeds
-            if not action and speed < 15:
+            if not action and speed < 20:
                 # Add light acceleration to maintain movement
-                action = [['none:0.08', 'w:0.08']]
+                action = [['none:0.08', 'w:0.1']]
+
+            # with open("debug_action.txt", "a") as f:
+            #     frame_time = status.get("detect_frame", None)
+            #     if action != initial_action:
+            #         f.write(f"Action changed from {initial_action} to {action}\n in status: {frame_time}\n")
+            #     else:
+            #         f.write(f"{action} in status: {frame_time}\n")
 
             # Execute action
             if action:

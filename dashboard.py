@@ -53,7 +53,6 @@ class TruckDashboard:
         roi_rgb = cv2.cvtColor(roi, cv2.COLOR_RGBA2RGB)
         frame_time = time.time()
         self.lane_status = self.lane_mask_detector(roi)
-        print("Lane status:", self.lane_status["lane_data"].shape)
         # cv2.imwrite("debug_images/roi_rgb_{}.png".format(frame_time), roi_rgb)
         # self.lane_status["lane_image"].save("debug_images/frame_{}.png".format(frame_time))
 
