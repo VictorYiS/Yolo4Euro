@@ -2,6 +2,7 @@
 import time
 
 import grabscreen
+from data_loader import DataLoader
 from detector import YOLODetector, LaneDetector
 from window import *
 
@@ -18,6 +19,7 @@ class TruckDashboard:
         # self.yolo_detector = YOLODetector("models/1000m_736sgz.pt")
         self.vehicle_detector = YOLODetector("models/best.pt")
         self.lane_mask_detector = LaneDetector()
+        self.data_laoder = DataLoader()
         self.lane_status = None
         self.car_detect = None
         self.detect_frame = None
@@ -39,12 +41,13 @@ class TruckDashboard:
         frame = grabscreen.grab_screen()
         BaseWindow.set_frame(frame)
         BaseWindow.update_all()
-        self.speed = self_speed_window.get_status()
-        self.distance = self_distance_window.get_status()
-        self.time = self_time_window.get_status()
-        self.setspeed = self_set_speed.get_status()
-        self.gear = self_gear_window.get_status()
-        # self.fuel = self_fuel_window.get_status()
+        vehicle_data = self.data_laoder.get_data()
+        self.speed = vehicle_data["speed"]
+        self.distance = vehicle_data["distance"]
+        self.time = vehicle_data["time"]
+        self.setspeed = vehicle_data["limitspeed"]
+        self.gear = vehicle_data["gear"]
+        self.fuel = vehicle_data["fuel"]
 
         roi = battle_roi_window.color
         roi_rgb = cv2.cvtColor(roi, cv2.COLOR_RGBA2RGB)

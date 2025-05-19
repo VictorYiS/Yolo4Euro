@@ -255,7 +255,7 @@ class KeyController:
                 # Press key
                 self.controller.press(key)
                 self.current_pressed_keys.add(key)
-                log.debug(f"Key down: {key}")
+                # log.debug(f"Key down: {key}")
             except Exception as e:
                 log.error(f"Key press error {key}: {e}")
 
@@ -268,7 +268,7 @@ class KeyController:
             if key in self.current_pressed_keys:
                 self.controller.release(key)
                 self.current_pressed_keys.discard(key)
-                log.debug(f"Key up: {key}")
+                # log.debug(f"Key up: {key}")
 
     def _handle_key_conflicts(self, direction_key, movement_key):
         """Handle conflicts between opposing keys"""

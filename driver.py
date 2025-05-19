@@ -456,6 +456,7 @@ class TruckController():
         # Extract lane data and other status information
         lane_data = self._extract_lane_data(status)
         speed = status.get("speed", 0)
+        print("speed:", speed)
 
         # Process vehicle detection data
         car_list = self._process_car_detection(status)

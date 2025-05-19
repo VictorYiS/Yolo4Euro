@@ -219,12 +219,13 @@ class NumberWindow(StatusWindow):
     basedir = os.path.dirname(os.path.abspath(__file__))
     save_dir = os.path.join(basedir, "..", "save")
     _save_counter = 0
-    def __init__(self, sx, sy, ex, ey, min_value=0, max_value=100):
+    def __init__(self, sx, sy, ex, ey, min_value=0, max_value=100, open_log=False):
         super().__init__(sx, sy, ex, ey)
         self.value = 0
         self.min_value = min_value
         self.max_value = max_value
         self.gray = None
+        self.open_log = open_log
 
         os.makedirs(self.save_dir, exist_ok=True)
 
@@ -255,6 +256,8 @@ class NumberWindow(StatusWindow):
             custom_config = r'--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789.'
             text = pytesseract.image_to_string(binary, config=custom_config).strip()
 
+            if self.open_log:
+                print(f"[NumberWindow] OCR result: {text}")
             numbers = re.findall(r'\d+(?:\.\d+)?', text)
             if numbers:
                 # 如果找到多个数字，选择最长的那个
@@ -490,12 +493,12 @@ def convert_coordinates(x1, y1, x2, y2):
 game_window = BaseWindow(0, 0, game_width, game_height)
 # 转换后的窗口坐标
 
-# 根据游戏调整
-self_speed_window = NumberWindow(*convert_coordinates(1486, 706, 1510, 728), min_value=0, max_value=90)
-self_distance_window = NumberWindow(*convert_coordinates(1590, 735, 1620, 757))
-self_time_window = TimeWindow(1831, 707, 1884, 727)
-self_set_speed = NumberWindow(*convert_coordinates(1498,787,1520,803))
-self_gear_window = GearWindow(1601, 700, 1625, 729)
+# # 根据游戏调整
+# self_speed_window = NumberWindow(*convert_coordinates(1486, 706, 1513, 728), min_value=0, max_value=90, open_log=True)
+# self_distance_window = NumberWindow(*convert_coordinates(1590, 735, 1620, 757))
+# self_time_window = TimeWindow(1831, 707, 1884, 727)
+# self_set_speed = NumberWindow(*convert_coordinates(1498,787,1520,803))
+# self_gear_window = GearWindow(1601, 700, 1625, 729)
 
 roi_x_size = 1000  # ROI的宽度和高度（以游戏窗口中心为中心的矩形）
 roi_y_size = 500  # ROI的宽度和高度（以游戏窗口中心为中心的矩形）
