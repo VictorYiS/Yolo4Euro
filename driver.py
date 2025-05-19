@@ -22,26 +22,24 @@ class TruckController():
         self.prev_lane_data = None
         self.lane_confidence = 0.8
         self.prev_lane_confidence = 0.0
-        self.lane_history = []  # Store recent lane centers for stability
         self.max_history = 5
-
-        # Target right lane by default (0-indexed, 1 = right lane)
-        self.target_lane = 1
-
-        # Camera offset compensation (slight right bias in camera)
-        self.camera_offset = 10  # Pixels to adjust for camera positioning
-
-        # Lane width estimation for validation
-        self.expected_lane_width = 150  # Initial estimate, will adapt
-        self.lane_width_alpha = 0.1  # Adaptation rate
 
         # Lane count estimation
         self.lane_count = 2  # Default assumption: 2 lanes
         self.last_lane_count = 2
         self.stability_factor = 0.85  # Weight factor for temporal stability
 
+        # Lane width estimation for validation
+        self.expected_lane_width = 150  # Initial estimate, will adapt
+        self.lane_width_alpha = 0.1  # Adaptation rate
+
         # Camera calibration
         self.camera_offset = 10  # Pixels to adjust for camera positioning
+
+        # Curve detection
+        self.is_curve_detected = False
+        self.curve_direction = None
+        self.previous_valid_centers = []
 
         # Action tracking
         self.last_action_time = 0
@@ -52,6 +50,13 @@ class TruckController():
         self.min_accel_duration = 0.02
         self.max_accel_duration = 0.08
         self.base_accel_duration = 0.06
+
+        # Constants (replacing magic numbers)
+        self.LANE_PIXEL_MIN = 5
+        self.LANE_GAP_BASE = 10
+        self.CENTER_CONSISTENCY_THRESHOLD = 30
+        self.CURVE_DETECTION_THRESHOLD = 0.2
+        self.MIN_SCAN_LINES_FOR_CURVE = 3
 
     def get_drive_status(self):
         return self.autodrive_active
@@ -85,7 +90,8 @@ class TruckController():
         return self._apply_adaptive_pid(target_position, speed, game_steer)
 
     def _process_lane_data(self, lane_data):
-        """Process raw lane data with enhanced filtering and validation"""
+        """Process raw lane data with enhanced filtering and validation - combines former
+        _process_lane_data and _analyze_scan_line functions"""
         # If no current or previous data, cannot steer
         if lane_data is None and self.prev_lane_data is None:
             return None, 0
@@ -113,7 +119,6 @@ class TruckController():
         h, w = lane_data.shape[:2] if len(lane_data.shape) > 2 else lane_data.shape
 
         # Use multiple scan lines at different heights for more robust detection
-        # Add more scan lines at various heights for better curve detection
         look_ahead_positions = [int(h * 0.3), int(h * 0.4), int(h * 0.5), int(h * 0.6), int(h * 0.7)]
         all_lane_centers = []
         all_weights = []
@@ -125,35 +130,110 @@ class TruckController():
             if y_pos >= h:
                 continue
 
-            # Extract and analyze row data
-            detected_centers, is_valid, center_count = self._analyze_scan_line(lane_data, y_pos, w)
-            scan_line_counts.append(center_count)
+            # Extract row data for this scan line
+            row = lane_data[y_pos, :]
+            lane_pixels = np.where(row > 0)[0]
 
-            if is_valid:
+            # Not enough pixels for valid analysis
+            if len(lane_pixels) < self.LANE_PIXEL_MIN:
+                scan_line_counts.append(0)
+                continue
+
+            # Group lane pixels into potential lane lines
+            # Larger gap threshold for further distances (wider lanes in perspective)
+            gap_threshold = max(self.LANE_GAP_BASE, 20 - int((y_pos / h) * 10))
+            groups = self._group_lane_pixels(lane_pixels, gap_threshold)
+
+            # Need at least 2 groups to form a lane
+            if len(groups) < 2:
+                scan_line_counts.append(0)
+                continue
+
+            # Apply directional filters for curve detection
+            groups = self._filter_groups_by_direction(groups, y_pos, lane_data)
+
+            # Calculate centers between lane lines and their widths
+            lane_centers, lane_widths = [], []
+            if len(groups) >= 2:
+                # Sort groups from left to right
+                groups.sort(key=lambda g: np.mean(g))
+
+                # Calculate lane centers (space between lines)
+                for i in range(len(groups) - 1):
+                    left_line = np.mean(groups[i])
+                    right_line = np.mean(groups[i + 1])
+                    center = (left_line + right_line) / 2
+                    width = right_line - left_line
+
+                    lane_centers.append(center)
+                    lane_widths.append(width)
+
+            # Validate lanes based on expected width and curve-aware validation
+            valid_centers = []
+            if lane_centers:
+                # Adjust tolerance based on curve detection and scan line position
+                is_upper_scan = y_pos < (h * 0.5)
+
+                # Determine appropriate width tolerance
+                base_tolerance = 0.4  # 40% base tolerance
+                width_tolerance = (base_tolerance + 0.2 if self.is_curve_detected else
+                                   (base_tolerance + 0.1 if is_upper_scan else base_tolerance))
+
+                min_valid_width = self.expected_lane_width * (1 - width_tolerance)
+                max_valid_width = self.expected_lane_width * (1 + width_tolerance)
+
+                for i, (center, width) in enumerate(zip(lane_centers, lane_widths)):
+                    # Base validation on width constraints
+                    width_valid = min_valid_width <= width <= max_valid_width
+
+                    # Check for consistency with previous centers
+                    center_valid = len(lane_centers) <= 2  # Always accept if only a few lanes
+
+                    if not width_valid and self.previous_valid_centers:
+                        # Check if this center is close to any previously valid center
+                        center_valid = any(abs(center - prev_center) < self.CENTER_CONSISTENCY_THRESHOLD
+                                           for prev_center in self.previous_valid_centers)
+
+                    # Accept if either width is reasonable or center is consistent with history
+                    if width_valid or (center_valid and len(lane_centers) <= 3):
+                        valid_centers.append(center)
+
+                # Update previous valid centers for future reference
+                if valid_centers:
+                    self.previous_valid_centers = valid_centers
+
+            # Record data from this scan line
+            if valid_centers:
                 valid_lane_count += 1
+                scan_line_counts.append(len(valid_centers))
 
                 # Weight by vertical position (closer = more important)
                 weight = 1.0 - (y_pos / h)
 
-                for center in detected_centers:
+                for center in valid_centers:
                     all_lane_centers.append(center)
                     all_weights.append(weight)
+            else:
+                scan_line_counts.append(0)
 
-        # Update lane count estimate with better curve detection
-        if valid_lane_count >= 2 and all_lane_centers:
-            # Detect if we're in a curve by analyzing lane count differences across scan lines
+        # Detect curves from scan line data
+        is_curve = False
+        if valid_lane_count >= 2:
             is_curve = self._detect_curve_from_scan_counts(scan_line_counts)
+            self.is_curve_detected = is_curve
+
+        # Update lane count estimate
+        if all_lane_centers:
+            # Get clustered centers for better lane count estimation
+            clustered_centers = self._cluster_lane_centers(all_lane_centers)
 
             # In curves, be more conservative with lane count changes
             if is_curve:
-                # During curves, maintain lane count more consistently
                 estimated_lane_count = self.last_lane_count
             else:
-                # Normal estimation outside of curves
-                unique_centers = self._cluster_lane_centers(all_lane_centers)
-                estimated_lane_count = len(unique_centers)
+                estimated_lane_count = len(clustered_centers)
 
-                # Apply stronger temporal smoothing in transitions
+                # Apply stability factor for smooth transitions
                 stability_factor = 0.9 if abs(estimated_lane_count - self.last_lane_count) > 0 else 0.8
                 self.lane_count = int(stability_factor * self.last_lane_count +
                                       (1 - stability_factor) * estimated_lane_count)
@@ -166,231 +246,173 @@ class TruckController():
             'weights': all_weights,
             'clustered_centers': self._cluster_lane_centers(all_lane_centers) if all_lane_centers else [],
             'lane_count': self.lane_count,
-            'is_curve': valid_lane_count > 0 and self._detect_curve_from_scan_counts(scan_line_counts),
+            'is_curve': is_curve,
+            'curve_direction': self.curve_direction,
             'speed': 0  # Will be updated by caller if available
         }, confidence
 
     def _detect_curve_from_scan_counts(self, scan_counts):
-        """Detect curves by analyzing differences in lane counts across scan lines"""
-        if not scan_counts or len(scan_counts) < 3:
+        """Improved curve detection by analyzing differences in lane counts across scan lines"""
+        if not scan_counts or len(scan_counts) < self.MIN_SCAN_LINES_FOR_CURVE:
             return False
 
-        # Check for significant differences in lane counts between upper and lower scan lines
-        # This indicates lanes appearing/disappearing due to curves
-        max_count = max(scan_counts)
-        min_count = min(scan_counts)
+        # Filter out zero counts (invalid scan lines)
+        valid_counts = [count for count in scan_counts if count > 0]
+        if len(valid_counts) < self.MIN_SCAN_LINES_FOR_CURVE:
+            return False
 
-        # If counts vary significantly or show a clear trend, it's likely a curve
+        # Method 1: Check for significant differences in lane counts
+        max_count = max(valid_counts)
+        min_count = min(valid_counts)
         if max_count - min_count >= 1:
             return True
 
-        # Check if first and last scan lines have different counts (indicating a curve)
-        if abs(scan_counts[0] - scan_counts[-1]) >= 1:
+        # Method 2: Check first and last valid scan lines for differences
+        if len(valid_counts) >= 2 and abs(valid_counts[0] - valid_counts[-1]) >= 1:
             return True
+
+        # Method 3: Check for horizontal shifts in lane centers
+        if hasattr(self, 'lane_history') and len(self.lane_history) >= 2:
+            recent_centers = self.lane_history[-1]
+            if recent_centers and len(recent_centers) > 1:
+                # Calculate average position
+                avg_pos = sum(recent_centers) / len(recent_centers)
+
+                # Check previous frame's centers if available
+                if len(self.lane_history) > 1 and self.lane_history[-2]:
+                    prev_centers = self.lane_history[-2]
+                    prev_avg = sum(prev_centers) / len(prev_centers)
+
+                    # Large horizontal shift indicates curve
+                    shift = avg_pos - prev_avg
+                    if abs(shift) > self.CURVE_DETECTION_THRESHOLD * self.expected_lane_width:
+                        # Set curve direction based on shift direction
+                        self.curve_direction = 'right' if shift < 0 else 'left'
+                        return True
 
         return False
 
-    def _analyze_scan_line(self, lane_data, y_pos, image_width):
-        """Analyze a horizontal scan line to detect lane positions with improved curve handling"""
-        # Extract row data
-        row = lane_data[y_pos, :]
-        lane_pixels = np.where(row > 0)[0]
+    def _group_lane_pixels(self, lane_pixels, gap_threshold=20):
+        """Group lane pixels into potential lane lines using efficient algorithm"""
+        if not lane_pixels.size:
+            return []
 
-        # Not enough pixels for valid analysis
-        if len(lane_pixels) < 5:
-            return [], False, 0
+        # Find gaps larger than threshold
+        gaps = np.diff(lane_pixels) >= gap_threshold
+        # Get indices where groups start (including first pixel)
+        group_starts = np.concatenate(([0], np.where(gaps)[0] + 1))
+        # Get indices where groups end (including last pixel)
+        group_ends = np.concatenate((np.where(gaps)[0], [len(lane_pixels) - 1]))
 
-        # Group lane pixels into potential lane lines
-        # Larger gap threshold for further distances (wider lanes in perspective)
-        gap_threshold = max(10, 20 - int((y_pos / lane_data.shape[0]) * 10))
-        groups = self._group_lane_pixels(lane_pixels, gap_threshold)
+        # Create groups with at least 3 points
+        groups = []
+        for start, end in zip(group_starts, group_ends):
+            if end - start + 1 >= 3:  # Minimum 3 points per group
+                groups.append(lane_pixels[start:end + 1])
 
-        # Need at least 2 groups to form a lane
-        if len(groups) < 2:
-            return [], False, 0
-
-        # Apply directional filters for curve detection
-        groups = self._filter_groups_by_direction(groups, y_pos, lane_data)
-
-        # Calculate width of each potential lane
-        lane_centers, lane_widths = self._calculate_lane_centers_and_widths(groups)
-
-        # Validate lanes based on expected width and curve-aware validation
-        valid_centers = self._validate_lanes(lane_centers, lane_widths, y_pos)
-
-        return valid_centers, len(valid_centers) > 0, len(valid_centers)
+        return groups
 
     def _filter_groups_by_direction(self, groups, y_pos, lane_data):
-        """Filter groups based on directional analysis to better handle curves"""
-        # Skip this analysis if we don't have enough vertical space for comparison
+        """Filter groups based on directional analysis for better curve handling"""
+        # Skip analysis if near image edges
         if y_pos >= lane_data.shape[0] - 20 or y_pos <= 20:
             return groups
 
-        # Look at vertical patterns to detect lane direction
+        h, w = lane_data.shape[:2] if len(lane_data.shape) > 2 else lane_data.shape
         filtered_groups = []
+
         for group in groups:
             # Calculate center of this group
             center_x = int(np.mean(group))
 
-            # Check pixels in nearby rows to detect line angle/direction
+            # Check vertical continuity
             valid_points = 0
             for offset in range(-20, 21, 5):
                 check_y = y_pos + offset
 
                 # Skip if outside image bounds
-                if check_y < 0 or check_y >= lane_data.shape[0]:
+                if check_y < 0 or check_y >= h:
                     continue
 
-                # Look for lane pixels near this center in nearby rows
-                nearby_row = lane_data[check_y, :]
-                search_range = 30 if abs(offset) > 10 else 15  # Wider search range for further offsets
+                # Search range depends on distance from current scan line
+                search_range = 30 if abs(offset) > 10 else 15
 
-                # Check if there are lane pixels in expected region
-                for x_offset in range(-search_range, search_range + 1):
-                    check_x = center_x + x_offset
-                    if 0 <= check_x < lane_data.shape[1] and nearby_row[check_x] > 0:
-                        valid_points += 1
-                        break
+                # Check for lane pixels in nearby rows
+                check_row = lane_data[check_y, :]
+                x_start = max(0, center_x - search_range)
+                x_end = min(w, center_x + search_range + 1)
 
-            # Keep groups that have vertical continuity
-            if valid_points >= 3:  # At least 3 points along vertical axis
+                # Use vectorized operation for efficiency
+                if np.any(check_row[x_start:x_end] > 0):
+                    valid_points += 1
+
+            # Keep groups with good vertical continuity
+            if valid_points >= 3:
                 filtered_groups.append(group)
 
-        # If filtering removed too many groups, revert to original to avoid false negatives
+        # If filtering removed too many groups, revert to original
         if len(filtered_groups) < 2 and len(groups) >= 2:
             return groups
 
         return filtered_groups
 
-    def _group_lane_pixels(self, lane_pixels, gap_threshold=20):
-        """Group lane pixels into potential lane lines"""
-        groups = []
-        current_group = [lane_pixels[0]]
-
-        for i in range(1, len(lane_pixels)):
-            if lane_pixels[i] - lane_pixels[i - 1] < gap_threshold:  # Same line if close enough
-                current_group.append(lane_pixels[i])
-            else:
-                if len(current_group) >= 3:  # Valid line needs minimum points
-                    groups.append(current_group)
-                current_group = [lane_pixels[i]]
-
-        if len(current_group) >= 3:
-            groups.append(current_group)
-
-        return groups
-
-    def _calculate_lane_centers_and_widths(self, groups):
-        """Calculate centers between lane lines and their widths"""
-        # Sort groups from left to right
-        groups.sort(key=lambda g: np.mean(g))
-
-        # Calculate lane centers (space between lines)
-        lane_centers = []
-        lane_widths = []
-
-        for i in range(len(groups) - 1):
-            left_line = np.mean(groups[i])
-            right_line = np.mean(groups[i + 1])
-            center = (left_line + right_line) / 2
-            width = right_line - left_line
-
-            lane_centers.append(center)
-            lane_widths.append(width)
-
-        return lane_centers, lane_widths
-
-    def _validate_lanes(self, centers, widths, y_pos=None):
-        """Validate lane centers based on expected width with curve-aware validation"""
-        valid_centers = []
-
-        # If no centers to validate, return empty list
-        if not centers:
-            return valid_centers
-
-        # Use more flexible validation in curves or at different scan heights
-        # Lower scan lines (road closer to vehicle) should have stricter validation
-        # Upper scan lines (road farther from vehicle) need more flexible validation
-        is_curve = hasattr(self, 'is_curve_detected') and self.is_curve_detected
-        is_upper_scan = y_pos is not None and y_pos < (
-                    self.prev_lane_data.shape[0] * 0.5) if self.prev_lane_data is not None else False
-
-        # Adjust tolerance based on curve detection and scan line position
-        base_tolerance = 0.4  # 40% base tolerance
-        if is_curve:
-            width_tolerance = base_tolerance + 0.2  # 60% tolerance in curves
-        elif is_upper_scan:
-            width_tolerance = base_tolerance + 0.1  # 50% tolerance for upper scan lines
-        else:
-            width_tolerance = base_tolerance  # 40% standard tolerance
-
-        min_valid_width = self.expected_lane_width * (1 - width_tolerance)
-        max_valid_width = self.expected_lane_width * (1 + width_tolerance)
-
-        # Check centers against previous valid centers for additional validation
-        previous_valid_centers = getattr(self, 'previous_valid_centers', [])
-
-        for i, (center, width) in enumerate(zip(centers, widths)):
-            # Base validation on width constraints
-            width_valid = min_valid_width <= width <= max_valid_width
-
-            # If we have previous centers, check for consistency
-            center_valid = True
-            if previous_valid_centers and not width_valid:
-                # Check if this center is close to any previously valid center
-                center_valid = any(abs(center - prev_center) < 30 for prev_center in previous_valid_centers)
-
-            # Accept if either width is reasonable or center is consistent with history
-            if width_valid or (center_valid and len(centers) <= 3) or len(centers) <= 2:
-                valid_centers.append(center)
-
-        # Update previous valid centers for future reference
-        self.previous_valid_centers = valid_centers if valid_centers else previous_valid_centers
-
-        return valid_centers
-
     def _cluster_lane_centers(self, centers, threshold=30):
-        """Cluster lane centers to identify unique lanes"""
+        """Cluster lane centers to identify unique lanes using a more efficient approach"""
         if not centers:
             return []
 
         # Sort centers
         centers = sorted(centers)
-        clusters = [[centers[0]]]
 
-        # Group close centers
-        for center in centers[1:]:
-            if center - clusters[-1][-1] < threshold:
-                clusters[-1].append(center)
-            else:
-                clusters.append([center])
+        # Use numpy for vectorized operations
+        centers_array = np.array(centers)
+        diff = np.diff(centers_array)
 
-        # Calculate average center for each cluster
-        return [sum(cluster) / len(cluster) for cluster in clusters]
+        # Identify break points where distance exceeds threshold
+        break_points = np.where(diff >= threshold)[0]
+
+        # Split into clusters
+        if len(break_points) == 0:
+            # All centers belong to one cluster
+            return [np.mean(centers_array)]
+
+        # Use break points to form clusters
+        cluster_indices = np.split(np.arange(len(centers)), break_points + 1)
+
+        # Calculate mean of each cluster
+        return [np.mean(centers_array[indices]) for indices in cluster_indices]
 
     def _update_lane_history(self, processed_data, confidence):
-        """Update lane history with current detection"""
+        """Update lane history with current detection and adapt lane width estimate"""
         clustered_centers = processed_data.get('clustered_centers', [])
 
-        if clustered_centers:
-            # Update lane width estimate if we have multiple lanes
-            if len(clustered_centers) >= 2:
-                widths = []
-                for i in range(len(clustered_centers) - 1):
-                    width = clustered_centers[i + 1] - clustered_centers[i]
-                    if 60 < width < 200:  # Reasonable lane width range
-                        widths.append(width)
+        if not clustered_centers:
+            return
 
-                if widths:
-                    # Use median for robustness against outliers
-                    median_width = sorted(widths)[len(widths) // 2]
-                    # Adaptive learning rate based on confidence
-                    alpha = self.lane_width_alpha * confidence
-                    self.expected_lane_width = (1 - alpha) * self.expected_lane_width + alpha * median_width
+        # Update lane width estimate if we have multiple lanes
+        if len(clustered_centers) >= 2:
+            # Calculate lane widths
+            sorted_centers = sorted(clustered_centers)
+            widths = [sorted_centers[i + 1] - sorted_centers[i]
+                      for i in range(len(sorted_centers) - 1)]
 
-            # Add to lane history
-            self.lane_history.append(clustered_centers)
-            self.lane_confidence = confidence
+            # Filter for reasonable widths
+            valid_widths = [w for w in widths if 60 < w < 200]
+
+            if valid_widths:
+                # Use median for robustness
+                median_width = sorted(valid_widths)[len(valid_widths) // 2]
+
+                # Adaptive learning rate based on confidence
+                alpha = self.lane_width_alpha * confidence
+                self.expected_lane_width = (1 - alpha) * self.expected_lane_width + alpha * median_width
+
+        # Add to lane history with limited size
+        self.lane_history.append(clustered_centers)
+        if len(self.lane_history) > self.max_history:
+            self.lane_history.pop(0)
+
+        self.lane_confidence = confidence
 
     def _determine_target_lane_position(self, processed_data):
         """Determine target lane position based on detected lanes and road configuration"""
@@ -403,49 +425,37 @@ class TruckController():
         # Sort centers from left to right
         sorted_centers = sorted(clustered_centers)
 
-        # Determine target lane based on estimated lane count
+        # Simplified lane selection logic
         lane_count = processed_data.get('lane_count', 2)
+        target = None
 
         if lane_count >= 3:
             # On 3+ lane roads, target center lane
             if len(sorted_centers) >= 3:
-                # Can identify center lane
                 middle_index = len(sorted_centers) // 2
                 target = sorted_centers[middle_index]
-            elif len(sorted_centers) == 2:
-                # Estimate center between detected lanes
-                target = (sorted_centers[0] + sorted_centers[1]) / 2
             else:
-                # Only one lane, use it
-                target = sorted_centers[0]
+                # Estimate center position
+                target = sum(sorted_centers) / len(sorted_centers)
         else:
             # On 2-lane roads, target right lane
             if len(sorted_centers) >= 2:
-                target = sorted_centers[-2]  # Second-to-last lane (right lane)
+                target = sorted_centers[1]  # Second lane (right lane in 2-lane)
             else:
-                target = sorted_centers[-1]  # Rightmost detected lane
+                target = sorted_centers[0]  # Only one lane detected
 
-        # Apply temporal smoothing for stability
-        if len(self.lane_history) > 0:
-            # Use weighted moving average with more weight to recent values
-            weights = [0.6, 0.75, 0.85, 0.95, 1.0]
-            weights = weights[-len(self.lane_history):]
+        # Calculate image center with camera offset
+        image_width = 1000  # Default width
+        if self.prev_lane_data is not None:
+            _, image_width = self.prev_lane_data.shape[:2] if len(
+                self.prev_lane_data.shape) > 2 else self.prev_lane_data.shape
+        vehicle_center = image_width // 2 + self.camera_offset
 
-            # Calculate image center with camera offset
-            image_width = 640  # Default width, should be updated in production
-            if self.prev_lane_data is not None:
-                h, image_width = self.prev_lane_data.shape[:2] if len(
-                    self.prev_lane_data.shape) > 2 else self.prev_lane_data.shape
-            vehicle_center = image_width // 2 + self.camera_offset
-
-            # Calculate error (difference from vehicle center)
-            return target - vehicle_center
-
-        return target
+        # Calculate error (difference from vehicle center)
+        return target - vehicle_center
 
     def _use_historical_steering(self, game_steer=0.0):
         """Use historical steering data when no lanes detected, with current steering consideration"""
-        # Use previous error with decay for smooth transition
         # Apply more reduction when current steering is significant
         steer_reduction_factor = 0.7 - min(0.4, abs(game_steer) * 0.5)
         reduced_steering = self.prev_error * steer_reduction_factor
@@ -471,23 +481,18 @@ class TruckController():
         ki = ki_base * speed_factor  # Less integral at high speeds
         kd = kd_base * (1 + 0.5 * speed_factor)  # More dampening at higher speeds
 
-        # Get current steering angle from game [-1.0 to 1.0]
-        current_steer_angle = game_steer
-
         # Calculate steering rate limiting factor based on current angle
-        # The closer we are to extreme values, the less aggressive we should be
-        steering_limit_factor = 1.0 - min(1.0, abs(current_steer_angle) / 0.3) * 0.7
+        steering_limit_factor = 1.0 - min(1.0, abs(game_steer) / 0.3) * 0.7
 
         # Smoother error with adaptive filtering
-        # Apply more filtering when current steering is already significant
         alpha = 0.7 * steering_limit_factor
         smoothed_error = alpha * error + (1 - alpha) * self.prev_error
 
-        # Anti-windup for integral term with reduced accumulation when steering is already high
+        # Anti-windup for integral term
         max_i_term = 10 * steering_limit_factor
         self.error_sum = max(min(self.error_sum + smoothed_error * steering_limit_factor, max_i_term), -max_i_term)
 
-        # Calculate PID terms with current steering influence
+        # Calculate PID terms
         p_term = kp * smoothed_error
         i_term = ki * self.error_sum
         d_term = kd * (smoothed_error - self.prev_error)
@@ -498,17 +503,14 @@ class TruckController():
         # Calculate total steering
         steering = p_term + i_term + d_term
 
-        # Dynamic steering time based on error magnitude with dampening
-        # Lower value for gentler corrections
-        # Scale inversely to current steering - apply lesser corrections when already turning
+        # Dynamic steering time based on error magnitude
         error_magnitude = min(abs(smoothed_error) / 180, 0.07) * steering_limit_factor
 
-        # Reduce steering magnitude if turning in same direction as current steering
-        # to prevent oversteering
-        if (steering > 0 and current_steer_angle > 0.1) or (steering < 0 and current_steer_angle < -0.1):
-            error_magnitude *= 0.7  # Reduce magnitude when adding to existing turn
+        # Reduce magnitude when turning in same direction as current steering
+        if (steering > 0 and game_steer > 0.1) or (steering < 0 and game_steer < -0.1):
+            error_magnitude *= 0.7
 
-        # Different steering thresholds based on magnitude
+        # Apply steering based on threshold
         if abs(smoothed_error) < self.lane_center_threshold:
             return None, 0
         elif steering > 0:
@@ -538,7 +540,7 @@ class TruckController():
         id_positions = []
         for inst_id in ids:
             ys, xs = np.where(inst_data == inst_id)
-            if len(xs) == 0: 
+            if len(xs) == 0:
                 continue
             mean_x = xs.mean()
             id_positions.append((inst_id, mean_x))
@@ -549,7 +551,7 @@ class TruckController():
 
         # 3. 按 mean_x 排序，从左到右
         id_positions.sort(key=lambda x: x[1])
-        # 4. 映射到 “left”/“right”
+        # 4. 映射到 "left"/"right"
         side_map = {}
         if len(id_positions) == 1:
             # 只有一条车道，我们当作 center，也可以标成 left
@@ -569,8 +571,8 @@ class TruckController():
             cx = int((x1 + x2) / 2)
             cy = int(y2)
             # 限定在图像范围内
-            cx = np.clip(cx, 0, W-1)
-            cy = np.clip(cy, 0, H-1)
+            cx = np.clip(cx, 0, W - 1)
+            cy = np.clip(cy, 0, H - 1)
 
             inst_id = int(inst_data[cy, cx])
             lane_side = side_map.get(inst_id, None)
@@ -668,85 +670,71 @@ class TruckController():
         return car_list
 
     def _detect_road_conditions(self, lane_data, cars_in_lanes):
-        """Detect road conditions like curves, obstacles, etc. with improved curve detection"""
+        """Detect road conditions like curves, obstacles based on lane data and cars"""
         conditions = {
-            'is_curve': False,
-            'curve_direction': None,
+            'is_curve': self.is_curve_detected,
+            'curve_direction': self.curve_direction,
             'has_obstacle': False,
             'obstacle_side': None,
             'recommend_lane_change': False
         }
 
-        # Detect curves from lane data
+        # Additional curve detection from lane data shape
         if lane_data is not None and isinstance(lane_data, np.ndarray):
-            try:
-                # Check if lanes have significant curvature
-                h, w = lane_data.shape[:2] if len(lane_data.shape) > 2 else lane_data.shape
+            h, w = lane_data.shape[:2] if len(lane_data.shape) > 2 else lane_data.shape
 
-                # Analyze multiple horizontal scan lines for better curve detection
-                scan_positions = [
-                    int(h * 0.3),  # Far ahead
-                    int(h * 0.5),  # Middle distance
-                    int(h * 0.7)  # Closer to vehicle
-                ]
+            # Sample points across multiple heights
+            scan_positions = [int(h * 0.3), int(h * 0.5), int(h * 0.7)]
+            scan_centers = []
 
-                scan_centers = []
+            for y_pos in scan_positions:
+                if y_pos >= h:
+                    continue
 
-                for y_pos in scan_positions:
-                    if y_pos >= h:
-                        continue
+                row = lane_data[y_pos, :]
+                lane_pixels = np.where(row > 0)[0]
 
-                    # Get lane pixels at this scan line
-                    row = lane_data[y_pos, :]
-                    lane_pixels = np.where(row > 0)[0]
+                if len(lane_pixels) > 5:
+                    # Calculate center of lane pixels
+                    center = np.mean(lane_pixels)
+                    scan_centers.append((y_pos, center))
 
-                    if len(lane_pixels) > 5:
-                        # Calculate center of lane pixels
-                        center = np.mean(lane_pixels)
-                        scan_centers.append((y_pos, center))
+            # Detect curve from scan centers
+            if len(scan_centers) >= 2:
+                scan_centers.sort()
 
-                # Need at least 2 scan lines to detect curvature
-                if len(scan_centers) >= 2:
-                    # Sort by y position (top to bottom)
-                    scan_centers.sort()
+                # Calculate horizontal shift between scan lines
+                shifts = []
+                for i in range(1, len(scan_centers)):
+                    prev_y, prev_x = scan_centers[i - 1]
+                    curr_y, curr_x = scan_centers[i]
 
-                    # Calculate horizontal shift between scan lines
-                    shifts = []
-                    for i in range(1, len(scan_centers)):
-                        prev_y, prev_x = scan_centers[i - 1]
-                        curr_y, curr_x = scan_centers[i]
+                    # Calculate normalized shift
+                    vert_dist = curr_y - prev_y
+                    horz_shift = curr_x - prev_x
+                    normalized_shift = horz_shift / vert_dist if vert_dist > 0 else 0
 
-                        # Calculate shift normalized by vertical distance
-                        vert_dist = curr_y - prev_y
-                        horz_shift = curr_x - prev_x
-                        normalized_shift = horz_shift / vert_dist if vert_dist > 0 else 0
+                    shifts.append(normalized_shift)
 
-                        shifts.append(normalized_shift)
+                # Detect curve from average shift
+                if shifts:
+                    avg_shift = sum(shifts) / len(shifts)
+                    if abs(avg_shift) > self.CURVE_DETECTION_THRESHOLD:
+                        conditions['is_curve'] = True
+                        conditions['curve_direction'] = 'right' if avg_shift < 0 else 'left'
 
-                    # Average shift across scan lines
-                    if shifts:
-                        avg_shift = sum(shifts) / len(shifts)
+                        # Update class variables for use elsewhere
+                        self.is_curve_detected = True
+                        self.curve_direction = conditions['curve_direction']
 
-                        # Detect curve and direction
-                        if abs(avg_shift) > 0.2:  # Threshold for curve detection
-                            conditions['is_curve'] = True
-                            conditions['curve_direction'] = 'right' if avg_shift < 0 else 'left'
-
-                            # Store for use in other functions
-                            self.is_curve_detected = True
-                            self.curve_direction = conditions['curve_direction']
-                        else:
-                            self.is_curve_detected = False
-                            self.curve_direction = None
-            except Exception as e:
-                log.error(f"Error detecting road curve: {e}")
-                self.is_curve_detected = False
-
-        # Detect obstacles from cars_in_lanes with improved detection
+        # Detect obstacles from cars_in_lanes
         if cars_in_lanes:
-            for car, lane in cars_in_lanes:
-                # Calculate obstacle proximity
-                x1, y1, x2, y2 = car['bbox']
+            for car_obj, lane in cars_in_lanes:
+                if not isinstance(car_obj, dict) or 'bbox' not in car_obj:
+                    continue
+
+                # Calculate obstacle proximity based on bounding box
+                x1, y1, x2, y2 = car_obj['bbox']
                 car_height = y2 - y1
                 car_width = x2 - x1
 
@@ -765,7 +753,7 @@ class TruckController():
                     # Check for lane change recommendation based on curve state
                     if not conditions['is_curve']:
                         # Only recommend lane changes on straight segments
-                        if not any(l == "left" for _, l in cars_in_lanes):
+                        if not any(l == "left" for car, l in cars_in_lanes if isinstance(car, dict)):
                             conditions['recommend_lane_change'] = True
 
         return conditions
@@ -817,12 +805,10 @@ class TruckController():
         return 'w', accel_duration
 
     def _create_combined_action(self, steering_action, steering_duration, accel_action, accel_duration, game_steer=0.0):
-        """Create combined steering and acceleration action with consideration for current steering"""
+        """Create combined steering and acceleration action with improved smoothing"""
         # Only apply steering action if it's significant enough or in the opposite direction
         # of the current steering to correct course
         if steering_action:
-            current_magnitude = abs(game_steer)
-
             # If requesting same direction as current steering and magnitude is already high,
             # reduce the duration or cancel if not needed
             if (steering_action == 'd' and game_steer > 0.3) or (steering_action == 'a' and game_steer < -0.3):
