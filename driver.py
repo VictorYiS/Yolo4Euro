@@ -417,44 +417,36 @@ class TruckController():
         self.lane_confidence = confidence
 
     def _determine_target_lane_position(self, processed_data):
-        """Determine target lane position based on detected lanes and road configuration"""
-        clustered_centers = processed_data.get('clustered_centers', [])
-
-        if not clustered_centers:
-            # No centers detected, fall back to previous error
+        """
+        选宽度最接近 300px 的车道：即在 clustered_centers 里
+        找到相邻两车道中心间距最接近 300 的一对，
+        然后把该对左侧那条车道(centers[j])作为驾驶目标。
+        """
+        centers = processed_data.get('clustered_centers', [])
+        if not centers:
             return self.prev_error
-
-        # Sort centers from left to right
-        sorted_centers = sorted(clustered_centers)
-
-        # Simplified lane selection logic
-        lane_count = processed_data.get('lane_count', 2)
-        target = None
-
-        if lane_count >= 3:
-            # On 3+ lane roads, target center lane
-            if len(sorted_centers) >= 3:
-                middle_index = len(sorted_centers) // 2
-                target = sorted_centers[middle_index]
-            else:
-                # Estimate center position
-                target = sum(sorted_centers) / len(sorted_centers)
+        # 排序从左到右
+        centers = sorted(centers)
+        n = len(centers)
+        if n >= 2:
+            # 计算相邻中心间距
+            # widths[i] = centers[i+1] - centers[i]
+            widths = [centers[i + 1] - centers[i] for i in range(n - 1)]
+            # 找到与 300 最接近的索引
+            j = int(np.argmin(np.abs(np.array(widths) - 200)))
+            # 目标车道中心：这对的左侧，也可以改成 centers[j+1] 选右侧
+            target_center = centers[j + 1]
         else:
-            # On 2-lane roads, target right lane
-            if len(sorted_centers) >= 2:
-                target = sorted_centers[1]  # Second lane (right lane in 2-lane)
-            else:
-                target = sorted_centers[0]  # Only one lane detected
-
-        # Calculate image center with camera offset
-        image_width = 1000  # Default width
+            # 只有一条车道时，直接用它
+            target_center = centers[0]
+        # 计算画面（车辆）中心
         if self.prev_lane_data is not None:
-            _, image_width = self.prev_lane_data.shape[:2] if len(
-                self.prev_lane_data.shape) > 2 else self.prev_lane_data.shape
-        vehicle_center = image_width // 2 + self.camera_offset
-
-        # Calculate error (difference from vehicle center)
-        return target - vehicle_center
+            _, w = self.prev_lane_data.shape[:2]
+        else:
+            w = 1000  # 兜底
+        vehicle_center = w // 2 + self.camera_offset
+        # 偏差 = 目标中心 - 车辆中心
+        return (target_center - vehicle_center) * 0.1
 
     def _use_historical_steering(self, game_steer=0.0):
         """Use historical steering data when no lanes detected, with current steering consideration"""
