@@ -12,6 +12,8 @@ class DataLoader:
                 "gear": data["gear"],
                 "limitspeed": round(data["speedLimit"] * 3.6, 3),
                 "fuel": round(data["fuel"] * 3.6, 3),
+                "userSteer": data["userSteer"],
+                "gameSteer": round(data["gameSteer"], 3),
                 "distance": 0,
                 "time": 0,
             }

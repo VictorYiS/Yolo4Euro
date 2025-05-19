@@ -101,6 +101,10 @@ def setup_shared_data():
         "distance": 0,
         "time": 0,
         "fuel": 100.0,
+        "gear": 0,
+        "setspeed": 0,
+        "user_steer": 0,
+        "game_steer": 0,
         "lane_status": None,
         "car_detect": None,
         "detect_frame": None
@@ -168,6 +172,8 @@ def update_basic_data(shared_data, status):
         "time": status["time"],
         "fuel": status["fuel"],
         "gear": status["gear"],
+        "user_steer": status["user_steer"],
+        "game_steer": status["game_steer"],
         "car_detect": pickle.dumps(status["car_detect"]) if status["car_detect"] else None,
         "detect_frame": pickle.dumps(status["detect_frame"]) if status["detect_frame"] else None,
     }

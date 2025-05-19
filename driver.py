@@ -32,7 +32,7 @@ class TruckController():
         self.camera_offset = 10  # Pixels to adjust for camera positioning
 
         # Lane width estimation for validation
-        self.expected_lane_width = 120  # Initial estimate, will adapt
+        self.expected_lane_width = 150  # Initial estimate, will adapt
         self.lane_width_alpha = 0.1  # Adaptation rate
 
         # Lane count estimation
@@ -584,7 +584,7 @@ class TruckController():
             right_cars = [obj for obj, side in categorized if side == "right"]
 
             print("******************")
-            for obj, side in cars_in_lanes:
+            for obj, side in categorized:
                 log.debug(f"Vehicle: {obj['class_name']} in lane: {side}")
 
         # Check for traffic lights first (highest priority)

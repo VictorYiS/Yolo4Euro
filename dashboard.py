@@ -14,8 +14,10 @@ class TruckDashboard:
         self.setspeed = 0
         self.distance = 0
         self.time = 0
-        self.gear = 'N'
+        self.gear = 0
         self.fuel = 100
+        self.user_steer = 0
+        self.game_steer = 0
         # self.yolo_detector = YOLODetector("models/1000m_736sgz.pt")
         self.vehicle_detector = YOLODetector("models/best.pt")
         self.lane_mask_detector = LaneDetector()
@@ -35,6 +37,8 @@ class TruckDashboard:
             "lane_status": self.lane_status,
             "car_detect": self.car_detect,
             "detect_frame": self.detect_frame,
+            "user_steer": self.user_steer,
+            "game_steer": self.game_steer
         }
 
     def update_data(self):
@@ -48,6 +52,8 @@ class TruckDashboard:
         self.setspeed = vehicle_data["limitspeed"]
         self.gear = vehicle_data["gear"]
         self.fuel = vehicle_data["fuel"]
+        self.user_steer = vehicle_data["userSteer"]
+        self.game_steer = vehicle_data["gameSteer"]
 
         roi = battle_roi_window.color
         roi_rgb = cv2.cvtColor(roi, cv2.COLOR_RGBA2RGB)
