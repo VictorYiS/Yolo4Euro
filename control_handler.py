@@ -358,7 +358,8 @@ class ProcessingManager:
     def _deserialize_state_data(self, state):
         """Safely deserialize data in the state dictionary"""
         # Deserialize car detection and frame data
-        state["car_detect"] = self._get_serialized_data(state, "car_detect")
+        # state["car_detect"] = self._get_serialized_data(state, "car_detect")
+        state["traffic_detect"] = self._get_serialized_data(state, "traffic_detect")
         state["detect_frame"] = self._get_serialized_data(state, "detect_frame")
 
         # Handle lane_status data
@@ -468,6 +469,7 @@ class ProcessingManager:
         # Get current state
         status = self.get_current_state()
         speed = status.get("speed", 0)
+        traffic_detect = status.get("traffic_detect", None)
 
         try:
             # Get action from truck controller
@@ -475,9 +477,9 @@ class ProcessingManager:
             # initial_action = action.copy()
 
             # Ensure there's always some forward momentum at low speeds
-            if not action and speed < 20:
+            if not action and speed < 20 and (traffic_detect is None):
                 # Add light acceleration to maintain movement
-                action = [['none:0.08', 'w:0.1']]
+                action = [['none:0.08', 'w:0.08']]
 
             # with open("debug_action.txt", "a") as f:
             #     frame_time = status.get("detect_frame", None)

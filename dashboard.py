@@ -18,12 +18,13 @@ class TruckDashboard:
         self.fuel = 100
         self.user_steer = 0
         self.game_steer = 0
-        # self.yolo_detector = YOLODetector("models/1000m_736sgz.pt")
-        self.vehicle_detector = YOLODetector("models/best.pt")
+        self.traffic_detector = YOLODetector("models/1000m_736sgz.pt")
+        # self.vehicle_detector = YOLODetector("models/best.pt")
         self.lane_mask_detector = LaneDetector()
         self.data_laoder = DataLoader()
         self.lane_status = None
-        self.car_detect = None
+        # self.car_detect = None
+        self.traffic_detect = None
         self.detect_frame = None
 
     def get_stored_data(self):
@@ -35,7 +36,8 @@ class TruckDashboard:
             "gear": self.gear,
             "fuel": self.fuel,
             "lane_status": self.lane_status,
-            "car_detect": self.car_detect,
+            # "car_detect": self.car_detect,
+            "traffic_detect": self.traffic_detect,
             "detect_frame": self.detect_frame,
             "user_steer": self.user_steer,
             "game_steer": self.game_steer
@@ -62,9 +64,12 @@ class TruckDashboard:
         # cv2.imwrite("debug_images/roi_rgb_{}.png".format(frame_time), roi_rgb)
         # self.lane_status["lane_image"].save("debug_images/frame_{}.png".format(frame_time))
 
-        yolo_results = self.vehicle_detector.detect(roi_rgb)
+        # yolo_results = self.vehicle_detector.detect(roi_rgb)
+        # if yolo_results is not None:
+        #     self.car_detect, classes = self.vehicle_detector.process_detections(roi_rgb, yolo_results)
+        yolo_results = self.traffic_detector.detect(roi_rgb)
         if yolo_results is not None:
-            self.car_detect, classes = self.vehicle_detector.process_detections(roi_rgb, yolo_results)
+            self.traffic_detect, classes = self.traffic_detector.process_detections(roi_rgb, yolo_results)
         else:
             print("No detection results.")
         self.detect_frame = frame_time

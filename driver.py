@@ -1,3 +1,5 @@
+import time
+
 from log import log
 import numpy as np
 import pickle
@@ -589,7 +591,6 @@ class TruckController():
         # Extract lane data and other status information
         lane_data = self._extract_lane_data(status)
         speed = status.get("speed", 0)
-        user_steer = status.get("user_steer", 0)
         game_steer = status.get("game_steer", 0)
 
         # Process vehicle detection data
@@ -609,11 +610,11 @@ class TruckController():
                 log.debug(f"Vehicle: {obj['class_name']} in lane: {side}")
 
         # Check for traffic lights first (highest priority)
-        if status.get("traffic_light") and len(status["traffic_light"]) > 0:
-            traffic_cmd = self._process_traffic_light(status["traffic_light"])
-            if traffic_cmd:
+        if status.get("traffic_detect") and len(status["traffic_detect"]) > 0:
+            traffic_cmd = self._process_traffic_light(status["traffic_detect"], speed, game_steer)
+            if traffic_cmd and len(traffic_cmd) > 0:
                 self.last_taken_frame = status.get("detect_frame", None)
-                return [[f'none:{traffic_cmd[1]}', f'{traffic_cmd[0]}:{traffic_cmd[1]}']]
+                return traffic_cmd
 
         # Detect road conditions (curves, etc.)
         road_conditions = self._detect_road_conditions(lane_data, cars_in_lanes)
@@ -851,14 +852,180 @@ class TruckController():
 
         return action
 
-    def _process_traffic_light(self, traffic_light_data):
-        """Process traffic light data and return appropriate action"""
-        for data in traffic_light_data:
-            if "Red" in data:
-                return ['s', '0.05']  # Stop for 0.05 seconds
-            elif "Green" in data:
-                return ['w', '0.05']  # Proceed for 0.05 seconds
-            elif "Yellow" in data:
-                return ['s', '0.03']  # Slow down for 0.03 seconds
+    def _process_traffic_light(self, traffic_light_data, speed=0, game_steer=0):
+        """
+        Process traffic light data and return appropriate action in the correct format.
+        Enhanced braking for red lights to ensure vehicle stops completely.
 
-        return None  # No action by default
+        Args:
+            traffic_light_data: List of detected traffic lights
+            speed: Current vehicle speed
+            game_steer: Current steering angle
+
+        Returns:
+            List of action commands in format [[direction:duration, movement:duration]] or [] if no action
+        """
+        # Initialize traffic light state if not exists
+        if not hasattr(self, 'traffic_light_state'):
+            self.traffic_light_state = {
+                'active': False,
+                'color': None,
+                'start_time': time.time(),
+                'last_detection_time': 0,
+                'exit_timeout': 5.0,  # Seconds to maintain state after light disappears
+                'stability_count': 0,
+                'braking_level': 0,  # Track braking intensity level (0-5)
+                'stop_detected': False  # Flag for complete stop detection
+            }
+
+        state = self.traffic_light_state
+        current_time = time.time()
+
+        # Detect most confident traffic light
+        current_light = None
+        highest_conf = 0.6  # Minimum confidence threshold
+
+        for data in traffic_light_data:
+            if isinstance(data, dict):
+                confidence = data.get('confidence', 0)
+                class_name = data.get('class_name', '').lower()
+                print(class_name)
+
+                if confidence > highest_conf:
+                    if 'red' in class_name:
+                        current_light = 'red'
+                        highest_conf = confidence
+                    elif 'green' in class_name:
+                        current_light = 'green'
+                        highest_conf = confidence
+                    elif 'yellow' in class_name:
+                        current_light = 'yellow'
+                        highest_conf = confidence
+
+        # Update detection time if light detected
+        if current_light:
+            state['last_detection_time'] = current_time
+
+            # Reset braking level if color changes
+            if state['color'] != current_light:
+                if current_light == 'red':
+                    # Initialize braking level based on current speed
+                    state['braking_level'] = min(5, max(1, int(speed / 10)))
+                    state['stop_detected'] = False
+                elif current_light == 'green':
+                    state['braking_level'] = 0
+                    state['stop_detected'] = False
+
+            state['color'] = current_light
+
+            # Activate traffic light mode if not already active
+            if not state['active']:
+                state['active'] = True
+                state['start_time'] = current_time
+                state['stability_count'] = 0
+                log.debug(f"Entering traffic light mode: {current_light}")
+
+        # Check if we should exit traffic light mode
+        if state['active'] and current_time - state['last_detection_time'] > state['exit_timeout']:
+            if state['stability_count'] > 20:  # Exit only if stable for a while
+                state['active'] = False
+                log.debug("Exiting traffic light mode - timeout")
+                return []
+
+        # Return if no active traffic light mode
+        if not state['active']:
+            return []
+
+        # Detect complete stop
+        if speed < 0.5 and state['color'] == 'red':
+            state['stop_detected'] = True
+            log.debug("Vehicle has come to a complete stop at red light")
+
+        # Handle based on light color
+        if state['color'] == 'red':
+            # Check if already stopped
+            if state['stop_detected'] and speed < 1.0:
+                # Maintain stop with light brake
+                return [[f'none:0.03', f's:0.03']]
+
+            # First correct steering if significant deviation
+            if abs(game_steer) > 0.1 and not state['stop_detected']:
+                # Correct steering before braking
+                steer_key = 'a' if game_steer > 0 else 'd'
+                steer_duration = min(0.05, abs(game_steer) * 0.1)
+                # Add some braking while steering
+                return [[f'{steer_key}:{steer_duration:.2f}', f's:{steer_duration:.2f}']]
+
+            # Progressive braking based on speed
+            if speed > 30:
+                # High speed - strong braking
+                brake_intensity = 0.15
+                state['braking_level'] = 5
+            elif speed > 20:
+                # Medium speed - moderate braking
+                brake_intensity = 0.12
+                state['braking_level'] = 4
+            elif speed > 10:
+                # Low speed - lighter braking
+                brake_intensity = 0.09
+                state['braking_level'] = 3
+            elif speed > 5:
+                # Very low speed - gentle braking
+                brake_intensity = 0.07
+                state['braking_level'] = 2
+            else:
+                # Crawling - minimal braking to stop
+                brake_intensity = 0.05
+                state['braking_level'] = 1
+
+            # Apply braking
+            return [[f'none:{brake_intensity:.2f}', f's:{brake_intensity:.2f}']]
+
+        elif state['color'] == 'yellow':
+            # Yellow light behavior - similar to red but less aggressive
+
+            # First correct steering if significant deviation
+            if abs(game_steer) > 0.1:
+                # Correct steering before braking
+                steer_key = 'a' if game_steer > 0 else 'd'
+                steer_duration = min(0.04, abs(game_steer) * 0.1)
+                return [[f'{steer_key}:{steer_duration:.2f}', f's:{steer_duration:.2f}']]
+
+            # Progressive braking based on speed (lighter than red)
+            if speed > 30:
+                brake_intensity = 0.10
+            elif speed > 20:
+                brake_intensity = 0.08
+            elif speed > 10:
+                brake_intensity = 0.06
+            else:
+                brake_intensity = 0.04
+
+            # Apply braking
+            return [[f'none:{brake_intensity:.2f}', f's:{brake_intensity:.2f}']]
+
+        elif state['color'] == 'green':
+            # Increment stability counter
+            state['stability_count'] += 1
+
+            # First correct steering if significant deviation
+            if abs(game_steer) > 0.1 and state['stability_count'] < 10:
+                steer_key = 'a' if game_steer > 0 else 'd'
+                steer_duration = min(0.04, abs(game_steer) * 0.1)
+                return [[f'{steer_key}:{steer_duration:.2f}', f'w:{steer_duration:.2f}']]
+
+            # Handle speed based on current value
+            if speed > 30:
+                # Above speed limit - apply gentle brake
+                return [[f'none:0.03', f's:0.03']]
+            elif speed < 25:
+                # Below target speed - accelerate gently
+                accel_intensity = 0.05 * (1 - (speed / 25))  # Reduce acceleration as speed approaches 25
+                accel_intensity = max(0.02, min(0.06, accel_intensity))  # Clamp between 0.02 and 0.06
+                return [[f'none:{accel_intensity:.2f}', f'w:{accel_intensity:.2f}']]
+            else:
+                # Maintain speed within target range (25-30)
+                return [[f'none:0.02', f'w:0.02']]
+
+        # Default case - no action
+        return []
