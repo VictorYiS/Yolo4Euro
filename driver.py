@@ -384,6 +384,7 @@ class TruckController():
             return 'd', error_magnitude
         else:
             return 'a', error_magnitude
+
     def categorize_cars_by_lane(self, lane_status, car_list):
         """
         给定 lane_status（含 'lane_data' 和 'instance_data' np.ndarray）
@@ -463,7 +464,12 @@ class TruckController():
         lane_status = status.get("lane_status") or {}
         cars_in_lanes = []
         if car_list and isinstance(lane_status, dict):
-            cars_in_lanes = self.categorize_cars_by_lane(lane_status, car_list)
+            categorized = self.categorize_cars_by_lane(lane_status, car_list)
+            left_cars = [obj for obj, side in categorized if side == "left"]
+            middle_cars = [obj for obj, side in categorized if side == "middle"]
+            right_cars = [obj for obj, side in categorized if side == "right"]
+
+            print("******************")
             for obj, side in cars_in_lanes:
                 log.debug(f"Vehicle: {obj['class_name']} in lane: {side}")
 
