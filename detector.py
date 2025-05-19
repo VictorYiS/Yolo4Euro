@@ -123,17 +123,15 @@ class LaneDetector:
 
 
 class YOLODetector:
-    def __init__(self, model_path):
+    def __init__(self, model_path, device='cuda:0'):
         """初始化YOLO模型"""
-        self.model = YOLO(model_path)
+        # 指定设备，如果有CUDA则使用，否则使用CPU
+        self.device = device if torch.cuda.is_available() else 'cpu'
+        self.model = YOLO(model_path).to(self.device)
         self.class_names = self.model.names
         self.last_save_time = 0
         self.save_interval = 2.0  # 保存图片的最小间隔(秒)
         self.detection_threshold = 0.5  # 置信度阈值
-
-        # 创建保存检测结果的目录
-        # self.save_dir = os.path.join("detections", datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
-        # os.makedirs(self.save_dir, exist_ok=True)
 
         log.debug(f"YOLO模型已加载: {model_path}")
         log.debug(f"可用类别: {self.class_names}")
@@ -143,7 +141,8 @@ class YOLODetector:
         if frame is None:
             return None
 
-        return self.model(frame, conf=self.detection_threshold)[0]
+        # 确保使用配置的设备进行推理
+        return self.model(frame, conf=self.detection_threshold, device=self.device)[0]
 
 
     def process_detections(self, frame, results):

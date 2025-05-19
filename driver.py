@@ -1,19 +1,26 @@
 from log import log
 import numpy as np
 import pickle
+from collections import deque
+
+from log import log
+
 
 class TruckController():
     def __init__(self):
+        # Core state
         self.autodrive_active = False
+        self.target_lane = 1  # Default target lane (0-indexed, 1 = center lane in 3-lane, or right lane in 2-lane)
+
+        # PID control parameters
         self.prev_error = 0
         self.error_sum = 0
-        self.lane_center_threshold = 20
-        self.last_action_time = 0
-        self.prev_actions = []
-        self.last_taken_frame = None
+        self.lane_center_threshold = 15
 
-        # Enhanced lane memory
+        # Lane tracking
+        self.lane_history = deque(maxlen=5)  # Store recent lane positions
         self.prev_lane_data = None
+        self.lane_confidence = 0.8
         self.prev_lane_confidence = 0.0
         self.lane_history = []  # Store recent lane centers for stability
         self.max_history = 5
@@ -27,6 +34,19 @@ class TruckController():
         # Lane width estimation for validation
         self.expected_lane_width = 120  # Initial estimate, will adapt
         self.lane_width_alpha = 0.1  # Adaptation rate
+
+        # Lane count estimation
+        self.lane_count = 2  # Default assumption: 2 lanes
+        self.last_lane_count = 2
+        self.stability_factor = 0.85  # Weight factor for temporal stability
+
+        # Camera calibration
+        self.camera_offset = 10  # Pixels to adjust for camera positioning
+
+        # Action tracking
+        self.last_action_time = 0
+        self.prev_actions = []
+        self.last_taken_frame = None
 
         # Speed control parameters
         self.min_accel_duration = 0.02
@@ -42,10 +62,29 @@ class TruckController():
         self.prev_error = 0
         self.error_sum = 0
         self.prev_actions = []
-        self.lane_history = []
+        self.lane_history.clear()
 
     def calculate_steering(self, lane_data):
-        """Enhanced PID controller for right lane following with improved memory and reliability"""
+        """Enhanced PID controller with improved lane memory and lane count handling"""
+        # Process and validate lane data
+        processed_data, confidence = self._process_lane_data(lane_data)
+
+        # If no valid lanes detected, use historical data
+        if processed_data is None or not processed_data.get('lane_centers', []):
+            return self._use_historical_steering()
+
+        # Store processed data for future reference
+        self._update_lane_history(processed_data, confidence)
+
+        # Determine target lane position
+        target_position = self._determine_target_lane_position(processed_data)
+
+        # Apply PID control to calculate steering action
+        speed = processed_data.get('speed', 30)  # Default to moderate speed if unknown
+        return self._apply_adaptive_pid(target_position, speed)
+
+    def _process_lane_data(self, lane_data):
+        """Process raw lane data with enhanced filtering and validation"""
         # If no current or previous data, cannot steer
         if lane_data is None and self.prev_lane_data is None:
             return None, 0
@@ -60,89 +99,87 @@ class TruckController():
             if self.prev_lane_confidence < 0.3:
                 return None, 0  # Too uncertain to use old data
             lane_data = self.prev_lane_data
+            confidence = self.prev_lane_confidence
         elif current_data_valid:
             # Store current data for future use
             self.prev_lane_data = lane_data.copy()
             self.prev_lane_confidence = 1.0
+            confidence = 1.0
+        else:
+            return None, 0
 
+        # Get image dimensions
         h, w = lane_data.shape[:2] if len(lane_data.shape) > 2 else lane_data.shape
 
-        # Multiple scan lines for better lane detection
-        # Look further ahead for stability, closer for immediate corrections
-        look_ahead_positions = [int(h * 0.5), int(h * 0.6), int(h * 0.7)]
-        detected_lanes = []
+        # Use multiple scan lines at different heights for more robust detection
+        look_ahead_positions = [int(h * 0.4), int(h * 0.5), int(h * 0.6), int(h * 0.7)]
+        all_lane_centers = []
+        all_weights = []
+        valid_lane_count = 0
 
+        # Process each scan line
         for y_pos in look_ahead_positions:
             if y_pos >= h:
                 continue
 
-            # Extract row data
-            row = lane_data[y_pos, :]
-            lane_pixels = np.where(row > 0)[0]
+            # Extract and analyze row data
+            detected_centers, is_valid = self._analyze_scan_line(lane_data, y_pos, w)
 
-            if len(lane_pixels) < 5:  # Too few pixels
-                continue
+            if is_valid:
+                valid_lane_count += 1
 
-            # Group lane pixels into potential lane lines with dynamic gap threshold
-            # Larger gap threshold for further distances (wider lanes in perspective)
-            gap_threshold = max(10, 20 - int((y_pos / h) * 10))
-            groups = self._group_lane_pixels(lane_pixels, gap_threshold)
+                # Weight by vertical position (closer = more important)
+                weight = 1.0 - (y_pos / h)
 
-            # Need at least 2 groups to form a lane
-            if len(groups) < 2:
-                continue
+                for center in detected_centers:
+                    all_lane_centers.append(center)
+                    all_weights.append(weight)
 
-            # Calculate width of each potential lane
-            lane_centers, lane_widths = self._calculate_lane_centers_and_widths(groups)
+        # Update lane count estimate
+        if valid_lane_count >= 2 and all_lane_centers:
+            unique_centers = self._cluster_lane_centers(all_lane_centers)
+            estimated_lane_count = len(unique_centers)
 
-            # Validate lanes based on expected width
-            valid_centers = self._validate_lanes(lane_centers, lane_widths)
+            # Apply temporal smoothing to lane count
+            self.lane_count = int(self.stability_factor * self.last_lane_count +
+                                  (1 - self.stability_factor) * estimated_lane_count)
+            self.last_lane_count = self.lane_count
 
-            # Add to detected lanes with y-position as weight (closer = more important)
-            weight = 1.0 - (y_pos / h)
-            for center in valid_centers:
-                detected_lanes.append((center, weight))
+        # Return processed data and confidence
+        return {
+            'lane_centers': all_lane_centers,
+            'weights': all_weights,
+            'clustered_centers': self._cluster_lane_centers(all_lane_centers) if all_lane_centers else [],
+            'lane_count': self.lane_count,
+            'speed': 0  # Will be updated by caller if available
+        }, confidence
 
-        # If no valid lanes detected, use history with decay
-        if not detected_lanes:
-            return self._use_historical_steering()
+    def _analyze_scan_line(self, lane_data, y_pos, image_width):
+        """Analyze a horizontal scan line to detect lane positions"""
+        # Extract row data
+        row = lane_data[y_pos, :]
+        lane_pixels = np.where(row > 0)[0]
 
-        # Calculate weighted average of lane centers
-        all_lane_centers = [center for center, _ in detected_lanes]
-        all_weights = [weight for _, weight in detected_lanes]
+        # Not enough pixels for valid analysis
+        if len(lane_pixels) < 5:
+            return [], False
 
-        # Sort centers from left to right
-        sorted_centers = sorted(all_lane_centers)
+        # Group lane pixels into potential lane lines
+        # Larger gap threshold for further distances (wider lanes in perspective)
+        gap_threshold = max(10, 20 - int((y_pos / lane_data.shape[0]) * 10))
+        groups = self._group_lane_pixels(lane_pixels, gap_threshold)
 
-        # Update lane width estimate if we have enough lanes
-        if len(sorted_centers) >= 2:
-            for i in range(len(sorted_centers) - 1):
-                width = sorted_centers[i + 1] - sorted_centers[i]
-                if 60 < width < 200:  # Reasonable lane width in pixels
-                    self.expected_lane_width = (1 - self.lane_width_alpha) * self.expected_lane_width + \
-                                               self.lane_width_alpha * width
+        # Need at least 2 groups to form a lane
+        if len(groups) < 2:
+            return [], False
 
-        # Determine target lane center
-        target_center = self._determine_target_lane_center(sorted_centers)
+        # Calculate width of each potential lane
+        lane_centers, lane_widths = self._calculate_lane_centers_and_widths(groups)
 
-        # Add to lane history for stability
-        self.lane_history.append(target_center)
-        if len(self.lane_history) > self.max_history:
-            self.lane_history.pop(0)
+        # Validate lanes based on expected width
+        valid_centers = self._validate_lanes(lane_centers, lane_widths)
 
-        # Use weighted moving average for target
-        weights = [0.6, 0.75, 0.85, 0.95, 1.0]  # More weight to recent values
-        weights = weights[-len(self.lane_history):]
-        smoothed_target = sum(c * w for c, w in zip(self.lane_history, weights)) / sum(weights)
-
-        # Calculate error with camera offset compensation
-        vehicle_center = w // 2 + self.camera_offset
-        error = smoothed_target - vehicle_center
-
-        # Apply PID control
-        steering_action, steering_duration = self._apply_pid_control(error)
-
-        return steering_action, steering_duration
+        return valid_centers, len(valid_centers) > 0
 
     def _group_lane_pixels(self, lane_pixels, gap_threshold=20):
         """Group lane pixels into potential lane lines"""
@@ -198,6 +235,100 @@ class TruckController():
 
         return valid_centers
 
+    def _cluster_lane_centers(self, centers, threshold=30):
+        """Cluster lane centers to identify unique lanes"""
+        if not centers:
+            return []
+
+        # Sort centers
+        centers = sorted(centers)
+        clusters = [[centers[0]]]
+
+        # Group close centers
+        for center in centers[1:]:
+            if center - clusters[-1][-1] < threshold:
+                clusters[-1].append(center)
+            else:
+                clusters.append([center])
+
+        # Calculate average center for each cluster
+        return [sum(cluster) / len(cluster) for cluster in clusters]
+
+    def _update_lane_history(self, processed_data, confidence):
+        """Update lane history with current detection"""
+        clustered_centers = processed_data.get('clustered_centers', [])
+
+        if clustered_centers:
+            # Update lane width estimate if we have multiple lanes
+            if len(clustered_centers) >= 2:
+                widths = []
+                for i in range(len(clustered_centers) - 1):
+                    width = clustered_centers[i + 1] - clustered_centers[i]
+                    if 60 < width < 200:  # Reasonable lane width range
+                        widths.append(width)
+
+                if widths:
+                    # Use median for robustness against outliers
+                    median_width = sorted(widths)[len(widths) // 2]
+                    # Adaptive learning rate based on confidence
+                    alpha = self.lane_width_alpha * confidence
+                    self.expected_lane_width = (1 - alpha) * self.expected_lane_width + alpha * median_width
+
+            # Add to lane history
+            self.lane_history.append(clustered_centers)
+            self.lane_confidence = confidence
+
+    def _determine_target_lane_position(self, processed_data):
+        """Determine target lane position based on detected lanes and road configuration"""
+        clustered_centers = processed_data.get('clustered_centers', [])
+
+        if not clustered_centers:
+            # No centers detected, fall back to previous error
+            return self.prev_error
+
+        # Sort centers from left to right
+        sorted_centers = sorted(clustered_centers)
+
+        # Determine target lane based on estimated lane count
+        lane_count = processed_data.get('lane_count', 2)
+
+        if lane_count >= 3:
+            # On 3+ lane roads, target center lane
+            if len(sorted_centers) >= 3:
+                # Can identify center lane
+                middle_index = len(sorted_centers) // 2
+                target = sorted_centers[middle_index]
+            elif len(sorted_centers) == 2:
+                # Estimate center between detected lanes
+                target = (sorted_centers[0] + sorted_centers[1]) / 2
+            else:
+                # Only one lane, use it
+                target = sorted_centers[0]
+        else:
+            # On 2-lane roads, target right lane
+            if len(sorted_centers) >= 2:
+                target = sorted_centers[-2]  # Second-to-last lane (right lane)
+            else:
+                target = sorted_centers[-1]  # Rightmost detected lane
+
+        # Apply temporal smoothing for stability
+        if len(self.lane_history) > 0:
+            # Use weighted moving average with more weight to recent values
+            weights = [0.6, 0.75, 0.85, 0.95, 1.0]
+            weights = weights[-len(self.lane_history):]
+
+            # Calculate image center with camera offset
+            image_width = 640  # Default width, should be updated in production
+            if self.prev_lane_data is not None:
+                h, image_width = self.prev_lane_data.shape[:2] if len(
+                    self.prev_lane_data.shape) > 2 else self.prev_lane_data.shape
+            vehicle_center = image_width // 2 + self.camera_offset
+
+            # Calculate error (difference from vehicle center)
+            return target - vehicle_center
+
+        return target
+
     def _use_historical_steering(self):
         """Use historical steering data when no lanes detected"""
         # Use previous error with decay for smooth transition
@@ -210,40 +341,20 @@ class TruckController():
         else:
             return 'a', min(abs(reduced_steering) / 150, 0.05)
 
-    def _determine_target_lane_center(self, sorted_centers):
-        """Determine which lane center to target"""
-        # Target rightmost lane by default
-        if not sorted_centers:
-            # No centers detected, use previous error
-            return self.prev_error
+    def _apply_adaptive_pid(self, error, speed):
+        """Apply PID control with parameters that adapt to driving conditions"""
+        # Base PID parameters
+        kp_base = 0.01
+        ki_base = 0.0005
+        kd_base = 0.008
 
-        # If we have at least two lanes, we can try to identify the right lane
-        if len(sorted_centers) >= 2:
-            # For a two-lane road with 3 lines, the right lane center is typically index 1
-            # For roads with more lanes, we prioritize staying in a right lane, but not the shoulder
+        # Adapt parameters based on speed
+        speed_factor = min(1.0, max(0.5, speed / 30.0)) if speed > 0 else 0.5
+        kp = kp_base * (1 + 0.2 * (1 - speed_factor))  # More aggressive at lower speeds
+        ki = ki_base * speed_factor  # Less integral at high speeds
+        kd = kd_base * (1 + 0.5 * speed_factor)  # More dampening at higher speeds
 
-            # Check if we might have a shoulder/barrier detection (much wider than a normal lane)
-            if len(sorted_centers) >= 3:
-                right_width = sorted_centers[-1] - sorted_centers[-2]
-                if right_width > self.expected_lane_width * 1.5:
-                    # Likely a shoulder/barrier - use second-to-last center
-                    return sorted_centers[-2]
-
-            # Use second-from-right for safety (right lane but not shoulder)
-            if len(sorted_centers) >= 2:
-                return sorted_centers[-2]
-
-        # Default to rightmost detected lane if nothing else works
-        return sorted_centers[-1]
-
-    def _apply_pid_control(self, error):
-        """Apply PID control to calculate steering"""
-        # Fine-tuned PID parameters
-        kp = 0.01  # Proportional gain
-        ki = 0.0005  # Integral gain
-        kd = 0.008  # Derivative gain
-
-        # Apply smoothing with previous error
+        # Smoother error with adaptive filtering
         alpha = 0.7
         smoothed_error = alpha * error + (1 - alpha) * self.prev_error
 
@@ -334,99 +445,53 @@ class TruckController():
             result.append((obj, lane_side))
 
         return result
+
     def get_action(self, status):
-        """Determine driving actions with simultaneous key support"""
+        """Determine driving actions with enhanced decision-making and smoother control"""
         # Avoid processing the same frame twice
         if self.last_taken_frame == status.get("detect_frame", None) and status.get("detect_frame", None) is not None:
             return []
 
-        # Extract lane data safely
-        lane_data = self.extract_lane_data(status)
-
-#车辆检测，但是lane_status复用了，后期可以合并一下
-        car_raw = status.get("car_detect")  
-  
-        # 根据类型决定如何处理
-
-        if isinstance(car_raw, (bytes, bytearray)):
-            # 真的是 pickle.dumps 过的字节流，就 loads
-            try:
-                car_list = pickle.loads(car_raw)
-            except Exception as e:
-                log.error(f"Failed to unpickle car_detect: {e}")
-                car_list = []
-        elif isinstance(car_raw, list):
-            # 已经是 list 了，直接用
-            car_list = car_raw
-        else:
-            # 其它情况都当成空列表
-            car_list = []
-        # 同时确保 lane_status 也合法
-        lane_status = status.get("lane_status") or {}
-        if car_list and isinstance(lane_status, dict):
-            categorized = self.categorize_cars_by_lane(lane_status, car_list)
-            for obj, side in categorized:
-                left_cars   = [obj for obj, side in categorized if side == "left"]
-                middle_cars = [obj for obj, side in categorized if side == "middle"]
-                right_cars  = [obj for obj, side in categorized if side == "right"]
-
-                print("******************")
-                print(
-                    f"[DEBUG] {obj['class_name']} bbox={obj['bbox']} → lane_side={side}"
-                )
-
-
-        # Check for traffic lights first as they have priority
-        if status.get("traffic_light") and len(status["traffic_light"]) > 0:
-            traffic_cmd = self.process_traffic_light(status["traffic_light"])
-            if traffic_cmd:
-                # Format: [['direction:duration', 'movement:duration']]
-                return [[f'none:{traffic_cmd[1]}', f'{traffic_cmd[0]}:{traffic_cmd[1]}']]
-
-        # Calculate steering with memory of previous lane data
-        steering_action, steering_duration = self.calculate_steering(lane_data)
-
-        # Implement action smoothing
-        if steering_action:
-            # Keep history of recent actions
-            self.prev_actions.append((steering_action, steering_duration))
-            if len(self.prev_actions) > 3:
-                self.prev_actions.pop(0)
-
-            # Smooth duration if we have history
-            if len(self.prev_actions) >= 2:
-                # Average recent durations, weighted toward current
-                total_duration = sum(d for _, d in self.prev_actions[-2:])
-                steering_duration = total_duration / 2
-
-        # Calculate acceleration based on speed
+        # Extract lane data and other status information
+        lane_data = self._extract_lane_data(status)
         speed = status.get("speed", 0)
 
-        # Ensure more consistent forward movement
-        # Higher base acceleration at low speeds, reduced at higher speeds
-        if speed < 5:
-            accel_duration = self.base_accel_duration * 1.2
-        else:
-            # Gradually reduce acceleration at higher speeds for stability
-            accel_factor = max(0.6, min(1.0, 15.0 / speed))
-            accel_duration = self.base_accel_duration * accel_factor
+        # Process vehicle detection data
+        car_list = self._process_car_detection(status)
 
-        # Constrain within limits
-        accel_duration = max(self.min_accel_duration, min(self.max_accel_duration, accel_duration))
+        # Process vehicle detection and lane categorization
+        lane_status = status.get("lane_status") or {}
+        cars_in_lanes = []
+        if car_list and isinstance(lane_status, dict):
+            cars_in_lanes = self.categorize_cars_by_lane(lane_status, car_list)
+            for obj, side in cars_in_lanes:
+                log.debug(f"Vehicle: {obj['class_name']} in lane: {side}")
 
-        # Format for simultaneous key presses
-        if steering_action:
-            # Both steering and acceleration
-            action = [[f'{steering_action}:{steering_duration:.2f}', f'w:{accel_duration:.2f}']]
-        else:
-            # Only acceleration, no steering
-            action = [[f'none:{accel_duration:.2f}', f'w:{accel_duration:.2f}']]
+        # Check for traffic lights first (highest priority)
+        if status.get("traffic_light") and len(status["traffic_light"]) > 0:
+            traffic_cmd = self._process_traffic_light(status["traffic_light"])
+            if traffic_cmd:
+                self.last_taken_frame = status.get("detect_frame", None)
+                return [[f'none:{traffic_cmd[1]}', f'{traffic_cmd[0]}:{traffic_cmd[1]}']]
+
+        # Detect road conditions (curves, etc.)
+        road_conditions = self._detect_road_conditions(lane_data, cars_in_lanes)
+
+        # Calculate steering action
+        steering_action, steering_duration = self.calculate_steering(lane_data)
+
+        # Calculate acceleration based on speed and road conditions
+        accel_action, accel_duration = self._calculate_acceleration(speed, road_conditions)
+
+        # Apply action smoothing
+        action = self._create_combined_action(steering_action, steering_duration,
+                                              accel_action, accel_duration)
 
         self.last_taken_frame = status.get("detect_frame", None)
         return action
 
-    def extract_lane_data(self, status):
-        """More robust extraction of lane data with multiple fallbacks"""
+    def _extract_lane_data(self, status):
+        """Extract lane data from status with multiple fallbacks"""
         lane_data = None
 
         # Try all possible ways to extract lane data
@@ -441,19 +506,151 @@ class TruckController():
         if lane_data is None and "lane_data" in status:
             lane_data = status["lane_data"]
 
-        # Log speed data if available
-        speed_data = status.get("speed_data", None)
-        set_speed_data = status.get("set_speed_data", None)
-
-        if speed_data is not None:
-            log.debug(f"Speed data: {speed_data}")
-        if set_speed_data is not None:
-            log.debug(f"Set speed data: {set_speed_data}")
-
         return lane_data
 
-    def process_traffic_light(self, traffic_light_data):
-        """Process YOLO-detected traffic light data and return action"""
+    def _process_car_detection(self, status):
+        """Process car detection data safely"""
+        car_raw = status.get("car_detect")
+
+        if isinstance(car_raw, (bytes, bytearray)):
+            # 真的是 pickle.dumps 过的字节流，就 loads
+            try:
+                car_list = pickle.loads(car_raw)
+            except Exception as e:
+                log.error(f"Failed to unpickle car_detect: {e}")
+                car_list = []
+        elif isinstance(car_raw, list):
+            # 已经是 list 了，直接用
+            car_list = car_raw
+        else:
+            # 其它情况都当成空列表
+            car_list = []
+
+        return car_list
+
+    def _detect_road_conditions(self, lane_data, cars_in_lanes):
+        """Detect road conditions like curves, obstacles, etc."""
+        conditions = {
+            'is_curve': False,
+            'has_obstacle': False,
+            'obstacle_side': None,
+            'recommend_lane_change': False
+        }
+
+        # Detect curves from lane data
+        if lane_data is not None and isinstance(lane_data, np.ndarray):
+            try:
+                # Check if lanes have significant curvature
+                h, w = lane_data.shape[:2] if len(lane_data.shape) > 2 else lane_data.shape
+
+                # Analyze several horizontal scan lines
+                upper_scan = int(h * 0.4)
+                lower_scan = int(h * 0.7)
+
+                if upper_scan < h and lower_scan < h:
+                    upper_row = lane_data[upper_scan, :]
+                    lower_row = lane_data[lower_scan, :]
+
+                    upper_lane_pixels = np.where(upper_row > 0)[0]
+                    lower_lane_pixels = np.where(lower_row > 0)[0]
+
+                    if len(upper_lane_pixels) > 0 and len(lower_lane_pixels) > 0:
+                        # Calculate lane center shift between upper and lower scan lines
+                        upper_center = np.mean(upper_lane_pixels)
+                        lower_center = np.mean(lower_lane_pixels)
+
+                        # If significant shift, it's likely a curve
+                        if abs(upper_center - lower_center) > w * 0.1:
+                            conditions['is_curve'] = True
+            except Exception as e:
+                log.error(f"Error detecting road curve: {e}")
+
+        # Detect obstacles from cars_in_lanes
+        if cars_in_lanes:
+            for car, lane in cars_in_lanes:
+                # If car is in our lane and close
+                if lane == "right" and self.lane_count <= 2:
+                    # Calculate distance/size ratio as proxy for proximity
+                    x1, y1, x2, y2 = car['bbox']
+                    car_height = y2 - y1
+
+                    # If car is tall in image (close to us)
+                    if car_height > 100:  # Adjust threshold as needed
+                        conditions['has_obstacle'] = True
+                        conditions['obstacle_side'] = "front"
+
+                        # If left lane is clear, recommend lane change
+                        if not any(l == "left" for _, l in cars_in_lanes):
+                            conditions['recommend_lane_change'] = True
+
+        return conditions
+
+    def _calculate_acceleration(self, speed, road_conditions):
+        """Calculate acceleration action based on speed and road conditions"""
+        # Base acceleration parameters
+        if speed < 5:
+            # Higher acceleration at low speeds
+            accel_duration = self.base_accel_duration * 1.2
+        else:
+            # Reduce acceleration at higher speeds for stability
+            accel_factor = max(0.6, min(1.0, 15.0 / speed)) if speed > 0 else 1.0
+            accel_duration = self.base_accel_duration * accel_factor
+
+        # Adjust for road conditions
+        if road_conditions.get('is_curve', False):
+            # Reduce speed in curves
+            if speed > 60:
+                return 's', 0.03  # Light braking
+            elif speed < 40:
+                return 'w', accel_duration * 0.8  # Gentle acceleration
+            else:
+                return 'w', accel_duration * 0.5  # Maintain speed
+
+        if road_conditions.get('has_obstacle', False):
+            # Adjust for obstacles
+            if road_conditions.get('obstacle_side') == "front":
+                if speed > 30:
+                    return 's', 0.04  # Moderate braking
+                else:
+                    return 'none', 0  # Coast
+
+        # Normal driving - constrain within limits
+        accel_duration = max(self.min_accel_duration, min(self.max_accel_duration, accel_duration))
+        return 'w', accel_duration
+
+    def _create_combined_action(self, steering_action, steering_duration, accel_action, accel_duration):
+        """Create combined steering and acceleration action"""
+        # Record action for history
+        if steering_action:
+            # Track steering actions for smoothing
+            self.prev_actions.append((steering_action, steering_duration))
+            if len(self.prev_actions) > 3:
+                self.prev_actions.pop(0)
+
+            # Smooth duration using recent history
+            if len(self.prev_actions) >= 2:
+                # Average recent durations, weighted toward current
+                total_duration = sum(d for _, d in self.prev_actions[-2:])
+                steering_duration = total_duration / 2
+
+        # Format for simultaneous key presses
+        if steering_action and accel_action != 'none':
+            # Both steering and acceleration/braking
+            action = [[f'{steering_action}:{steering_duration:.2f}', f'{accel_action}:{accel_duration:.2f}']]
+        elif steering_action:
+            # Only steering
+            action = [[f'{steering_action}:{steering_duration:.2f}', f'none:{steering_duration:.2f}']]
+        elif accel_action != 'none':
+            # Only acceleration/braking
+            action = [[f'none:{accel_duration:.2f}', f'{accel_action}:{accel_duration:.2f}']]
+        else:
+            # No action
+            action = []
+
+        return action
+
+    def _process_traffic_light(self, traffic_light_data):
+        """Process traffic light data and return appropriate action"""
         for data in traffic_light_data:
             if "Red" in data:
                 return ['s', '0.05']  # Stop for 0.05 seconds
