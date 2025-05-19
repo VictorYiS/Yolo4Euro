@@ -64,14 +64,15 @@ class TruckController():
         self.prev_actions = []
         self.lane_history.clear()
 
-    def calculate_steering(self, lane_data):
-        """Enhanced PID controller with improved lane memory and lane count handling"""
+    def calculate_steering(self, lane_data, game_steer=0.0):
+        """Enhanced PID controller with improved lane memory and lane count handling,
+        now considering current steering angle"""
         # Process and validate lane data
         processed_data, confidence = self._process_lane_data(lane_data)
 
         # If no valid lanes detected, use historical data
         if processed_data is None or not processed_data.get('lane_centers', []):
-            return self._use_historical_steering()
+            return self._use_historical_steering(game_steer)
 
         # Store processed data for future reference
         self._update_lane_history(processed_data, confidence)
@@ -81,7 +82,7 @@ class TruckController():
 
         # Apply PID control to calculate steering action
         speed = processed_data.get('speed', 30)  # Default to moderate speed if unknown
-        return self._apply_adaptive_pid(target_position, speed)
+        return self._apply_adaptive_pid(target_position, speed, game_steer)
 
     def _process_lane_data(self, lane_data):
         """Process raw lane data with enhanced filtering and validation"""
@@ -442,10 +443,12 @@ class TruckController():
 
         return target
 
-    def _use_historical_steering(self):
-        """Use historical steering data when no lanes detected"""
+    def _use_historical_steering(self, game_steer=0.0):
+        """Use historical steering data when no lanes detected, with current steering consideration"""
         # Use previous error with decay for smooth transition
-        reduced_steering = self.prev_error * 0.7
+        # Apply more reduction when current steering is significant
+        steer_reduction_factor = 0.7 - min(0.4, abs(game_steer) * 0.5)
+        reduced_steering = self.prev_error * steer_reduction_factor
 
         if abs(reduced_steering) < self.lane_center_threshold:
             return None, 0
@@ -454,8 +457,9 @@ class TruckController():
         else:
             return 'a', min(abs(reduced_steering) / 150, 0.05)
 
-    def _apply_adaptive_pid(self, error, speed):
-        """Apply PID control with parameters that adapt to driving conditions"""
+    def _apply_adaptive_pid(self, error, speed, game_steer=0.0):
+        """Apply PID control with parameters that adapt to driving conditions
+        and take into account current steering angle"""
         # Base PID parameters
         kp_base = 0.01
         ki_base = 0.0005
@@ -467,15 +471,23 @@ class TruckController():
         ki = ki_base * speed_factor  # Less integral at high speeds
         kd = kd_base * (1 + 0.5 * speed_factor)  # More dampening at higher speeds
 
+        # Get current steering angle from game [-1.0 to 1.0]
+        current_steer_angle = game_steer
+
+        # Calculate steering rate limiting factor based on current angle
+        # The closer we are to extreme values, the less aggressive we should be
+        steering_limit_factor = 1.0 - min(1.0, abs(current_steer_angle) / 0.3) * 0.7
+
         # Smoother error with adaptive filtering
-        alpha = 0.7
+        # Apply more filtering when current steering is already significant
+        alpha = 0.7 * steering_limit_factor
         smoothed_error = alpha * error + (1 - alpha) * self.prev_error
 
-        # Anti-windup for integral term
-        max_i_term = 10
-        self.error_sum = max(min(self.error_sum + smoothed_error, max_i_term), -max_i_term)
+        # Anti-windup for integral term with reduced accumulation when steering is already high
+        max_i_term = 10 * steering_limit_factor
+        self.error_sum = max(min(self.error_sum + smoothed_error * steering_limit_factor, max_i_term), -max_i_term)
 
-        # Calculate PID terms
+        # Calculate PID terms with current steering influence
         p_term = kp * smoothed_error
         i_term = ki * self.error_sum
         d_term = kd * (smoothed_error - self.prev_error)
@@ -488,7 +500,13 @@ class TruckController():
 
         # Dynamic steering time based on error magnitude with dampening
         # Lower value for gentler corrections
-        error_magnitude = min(abs(smoothed_error) / 180, 0.07)
+        # Scale inversely to current steering - apply lesser corrections when already turning
+        error_magnitude = min(abs(smoothed_error) / 180, 0.07) * steering_limit_factor
+
+        # Reduce steering magnitude if turning in same direction as current steering
+        # to prevent oversteering
+        if (steering > 0 and current_steer_angle > 0.1) or (steering < 0 and current_steer_angle < -0.1):
+            error_magnitude *= 0.7  # Reduce magnitude when adding to existing turn
 
         # Different steering thresholds based on magnitude
         if abs(smoothed_error) < self.lane_center_threshold:
@@ -569,7 +587,8 @@ class TruckController():
         # Extract lane data and other status information
         lane_data = self._extract_lane_data(status)
         speed = status.get("speed", 0)
-        print("speed:", speed)
+        user_steer = status.get("user_steer", 0)
+        game_steer = status.get("game_steer", 0)
 
         # Process vehicle detection data
         car_list = self._process_car_detection(status)
@@ -597,15 +616,15 @@ class TruckController():
         # Detect road conditions (curves, etc.)
         road_conditions = self._detect_road_conditions(lane_data, cars_in_lanes)
 
-        # Calculate steering action
-        steering_action, steering_duration = self.calculate_steering(lane_data)
+        # Calculate steering action - pass game_steer to consider current steering angle
+        steering_action, steering_duration = self.calculate_steering(lane_data, game_steer)
 
         # Calculate acceleration based on speed and road conditions
-        accel_action, accel_duration = self._calculate_acceleration(speed, road_conditions)
+        accel_action, accel_duration = self._calculate_acceleration(speed, road_conditions, game_steer)
 
         # Apply action smoothing
         action = self._create_combined_action(steering_action, steering_duration,
-                                              accel_action, accel_duration)
+                                              accel_action, accel_duration, game_steer)
 
         self.last_taken_frame = status.get("detect_frame", None)
         return action
@@ -751,8 +770,8 @@ class TruckController():
 
         return conditions
 
-    def _calculate_acceleration(self, speed, road_conditions):
-        """Calculate acceleration action based on speed and road conditions"""
+    def _calculate_acceleration(self, speed, road_conditions, game_steer=0.0):
+        """Calculate acceleration action based on speed, road conditions and current steering"""
         # Base acceleration parameters
         if speed < 5:
             # Higher acceleration at low speeds
@@ -762,15 +781,28 @@ class TruckController():
             accel_factor = max(0.6, min(1.0, 15.0 / speed)) if speed > 0 else 1.0
             accel_duration = self.base_accel_duration * accel_factor
 
+        # Adjust for steering angle - reduce acceleration when turning significantly
+        steer_magnitude = abs(game_steer)
+        if steer_magnitude > 0.15:
+            # Calculate turning factor - reduces acceleration as steering increases
+            turn_factor = max(0.5, 1.0 - (steer_magnitude - 0.15) * 2.0)
+            accel_duration *= turn_factor
+
+            # For sharp turns, apply braking instead
+            if steer_magnitude > 0.4 and speed > 40:
+                return 's', 0.03 * min(1.0, steer_magnitude)  # Light braking proportional to turn sharpness
+
         # Adjust for road conditions
         if road_conditions.get('is_curve', False):
             # Reduce speed in curves
+            curve_severity = steer_magnitude * 2.0 if steer_magnitude > 0.15 else 1.0
+
             if speed > 60:
-                return 's', 0.03  # Light braking
+                return 's', 0.03 * curve_severity  # Braking proportional to curve severity
             elif speed < 40:
-                return 'w', accel_duration * 0.8  # Gentle acceleration
+                return 'w', accel_duration * 0.8 / curve_severity  # Gentler acceleration in curves
             else:
-                return 'w', accel_duration * 0.5  # Maintain speed
+                return 'w', accel_duration * 0.5 / curve_severity  # Maintain speed carefully in curves
 
         if road_conditions.get('has_obstacle', False):
             # Adjust for obstacles
@@ -784,8 +816,26 @@ class TruckController():
         accel_duration = max(self.min_accel_duration, min(self.max_accel_duration, accel_duration))
         return 'w', accel_duration
 
-    def _create_combined_action(self, steering_action, steering_duration, accel_action, accel_duration):
-        """Create combined steering and acceleration action"""
+    def _create_combined_action(self, steering_action, steering_duration, accel_action, accel_duration, game_steer=0.0):
+        """Create combined steering and acceleration action with consideration for current steering"""
+        # Only apply steering action if it's significant enough or in the opposite direction
+        # of the current steering to correct course
+        if steering_action:
+            current_magnitude = abs(game_steer)
+
+            # If requesting same direction as current steering and magnitude is already high,
+            # reduce the duration or cancel if not needed
+            if (steering_action == 'd' and game_steer > 0.3) or (steering_action == 'a' and game_steer < -0.3):
+                # Already turning strongly in requested direction, reduce or cancel
+                steering_duration *= 0.5
+                if steering_duration < 0.01:  # Below effectiveness threshold
+                    steering_action = None
+
+            # If correcting in opposite direction, maintain or slightly increase duration
+            elif (steering_action == 'd' and game_steer < -0.1) or (steering_action == 'a' and game_steer > 0.1):
+                # Correcting from opposite direction - maintain or increase slightly
+                steering_duration *= 1.1
+
         # Record action for history
         if steering_action:
             # Track steering actions for smoothing
