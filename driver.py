@@ -513,12 +513,9 @@ class TruckController():
             return 'a', error_magnitude
 
     def categorize_cars_by_lane(self, lane_status, car_list):
-        """
-        给定 lane_status（含 'lane_data' 和 'instance_data' np.ndarray）
-        以及车列表 car_list（每个 dict 有 'bbox'），
-        返回一个列表，每项是 (obj, lane_side)：
-            lane_side in {"left","right"} 或 None（不在任何车道）
-        """
+        """ Given lane_status (containing 'lane_data' and 'instance_data' np.ndarray) and a car list car_list (each
+            dict has 'bbox'), returns a list where each item is (obj, lane_side): lane_side in {"left","right"} or
+            None (not in any lane) """
         lane_data = lane_status.get("lane_data", None)
         inst_data = lane_status.get("instance_data", None)
         if lane_data is None or inst_data is None:
@@ -526,11 +523,9 @@ class TruckController():
 
         H, W = inst_data.shape[:2]
 
-        # 1. 找到所有实例 ID（排除背景 0）
         ids = np.unique(inst_data)
         ids = ids[ids != 0]
 
-        # 2. 计算每个实例在水平上的平均位置
         id_positions = []
         for inst_id in ids:
             ys, xs = np.where(inst_data == inst_id)
@@ -539,32 +534,30 @@ class TruckController():
             mean_x = xs.mean()
             id_positions.append((inst_id, mean_x))
 
-        # 如果一条都没检测到，全部标 None
+        # None
         if not id_positions:
             return [(obj, None) for obj in car_list]
 
-        # 3. 按 mean_x 排序，从左到右
+        # order by mean_x
         id_positions.sort(key=lambda x: x[1])
-        # 4. 映射到 "left"/"right"
+        # map tp "left"/"right"
         side_map = {}
         if len(id_positions) == 1:
-            # 只有一条车道，我们当作 center，也可以标成 left
+            # one lane as center or left
             side_map[id_positions[0][0]] = "center"
         else:
-            # 最左的是 left，最右的是 right，若中间还能扩
             side_map[id_positions[0][0]] = "left"
             side_map[id_positions[-1][0]] = "right"
-            # 中间的全标 middle
+            # middle
             for inst_id, _ in id_positions[1:-1]:
                 side_map[inst_id] = "middle"
 
-        # 5. 给每辆车做归属
+        # Everything is ready, now categorize cars
         result = []
         for obj in car_list:
             x1, y1, x2, y2 = obj['bbox']
             cx = int((x1 + x2) / 2)
             cy = int(y2)
-            # 限定在图像范围内
             cx = np.clip(cx, 0, W - 1)
             cy = np.clip(cy, 0, H - 1)
 
@@ -647,17 +640,14 @@ class TruckController():
         car_raw = status.get("car_detect")
 
         if isinstance(car_raw, (bytes, bytearray)):
-            # 真的是 pickle.dumps 过的字节流，就 loads
             try:
                 car_list = pickle.loads(car_raw)
             except Exception as e:
                 log.error(f"Failed to unpickle car_detect: {e}")
                 car_list = []
         elif isinstance(car_raw, list):
-            # 已经是 list 了，直接用
             car_list = car_raw
         else:
-            # 其它情况都当成空列表
             car_list = []
 
         return car_list

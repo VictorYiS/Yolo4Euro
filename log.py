@@ -10,25 +10,25 @@ log_file_path = os.path.join(log_directory, "running.log")
 # Configure logging
 logger = logging.getLogger("optimized_logger")
 logger.setLevel(logging.DEBUG)
-logger.propagate = False  # 关键修复：禁止传播到根日志
+logger.propagate = False  # key to prevent duplicate logs
 
 # Create handlers
 console_handler = logging.StreamHandler()
 console_handler.setLevel(logging.DEBUG)  
-console_formatter = logging.Formatter("%(message)s")  # 仅显示纯消息
+console_formatter = logging.Formatter("%(message)s")  # only message in console
 console_handler.setFormatter(console_formatter)
 
 file_handler = logging.handlers.RotatingFileHandler(
     log_file_path, maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8"
 )
-file_handler.setLevel(logging.DEBUG)  # 文件记录所有级别
+file_handler.setLevel(logging.DEBUG)  # debug level for file logging
 file_formatter = logging.Formatter(
-    "[%(asctime)s.%(msecs)03d][%(levelname).1s] %(message)s",  # 简化文件格式
+    "[%(asctime)s.%(msecs)03d][%(levelname).1s] %(message)s",
     datefmt="%H:%M:%S",
 )
 file_handler.setFormatter(file_formatter)
 
-# 确保只添加一次处理器
+# make sure handlers are not added multiple times
 if not logger.handlers:
     logger.addHandler(console_handler)
     logger.addHandler(file_handler)

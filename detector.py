@@ -124,46 +124,41 @@ class LaneDetector:
 
 class YOLODetector:
     def __init__(self, model_path, device='cuda:0'):
-        """初始化YOLO模型"""
-        # 指定设备，如果有CUDA则使用，否则使用CPU
+        """Initialize the YOLO detector with the specified model path and device."""
         self.device = device if torch.cuda.is_available() else 'cpu'
         self.model = YOLO(model_path).to(self.device)
         self.class_names = self.model.names
         self.last_save_time = 0
-        self.save_interval = 2.0  # 保存图片的最小间隔(秒)
-        self.detection_threshold = 0.5  # 置信度阈值
+        self.save_interval = 2.0  # save interval in seconds
+        self.detection_threshold = 0.5  # confidence threshold for detections
 
-        log.debug(f"YOLO模型已加载: {model_path}")
-        log.debug(f"可用类别: {self.class_names}")
+        log.debug(f"YOLO loaded: {model_path}")
+        log.debug(f"classes: {self.class_names}")
 
     def detect(self, frame):
-        """对帧进行目标检测"""
+        """detect objects in the given frame using the YOLO model."""
         if frame is None:
             return None
 
-        # 确保使用配置的设备进行推理
         return self.model(frame, conf=self.detection_threshold, device=self.device)[0]
 
 
     def process_detections(self, frame, results):
-        """处理检测结果并在需要时保存图像"""
+        """process the detection results and draw bounding boxes on the frame."""
         if results is None or frame is None:
             return [], []
 
-        # 提取检测信息
+        # extract bounding boxes and class IDs from results
         boxes = results.boxes.cpu().numpy()
         detected_objects = []
         detected_classes = []
 
-        # 处理每个检测结果并绘制标签
         for box in boxes:
-            # 提取边界框和类别信息
             x1, y1, x2, y2 = map(int, box.xyxy[0])
             confidence = float(box.conf[0])
             class_id = int(box.cls[0])
             class_name = self.class_names[class_id]
 
-            # 收集检测结果
             detected_objects.append({
                 'bbox': (x1, y1, x2, y2),
                 'confidence': confidence,
@@ -172,10 +167,8 @@ class YOLODetector:
             })
             detected_classes.append(class_name)
 
-            # 绘制边界框和标签
             self._draw_box(frame, x1, y1, x2, y2, class_name, confidence)
 
-        # # 如有检测结果且间隔足够，保存标注后的帧
         # if detected_objects and (time.time() - self.last_save_time) > self.save_interval:
         #     self.save_detection(frame, detected_classes)
         #     self.last_save_time = time.time()
@@ -183,23 +176,23 @@ class YOLODetector:
         return detected_objects, detected_classes
 
     def _draw_box(self, frame, x1, y1, x2, y2, class_name, confidence):
-        """在图像上绘制边界框和标签"""
+        """draw a bounding box and label on the frame."""
         cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
         label = f"{class_name}: {confidence:.2f}"
         cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
     def save_detection(self, frame, detected_classes):
-        """保存检测结果和掩码图像（如果提供）"""
+        """save the detection results to a file."""
         try:
-            # 创建带有时间戳和检测类别的基本文件名
+            # wait for the save interval to avoid frequent saves
             timestamp = datetime.now().strftime("%H-%M-%S")
             classes_str = "_".join(list(set(detected_classes))) if detected_classes else "no_detection"
             base_filename = f"{timestamp}_{classes_str}"
 
-            # 保存带有检测框的原始图像
+            # save the frame with detections
             original_filepath = os.path.join(self.save_dir, f"{base_filename}.jpg")
             cv2.imwrite(original_filepath, frame)
-            log.debug(f"原始检测结果已保存: {original_filepath}")
+            log.debug(f"original file saved: {original_filepath}")
 
         except Exception as e:
-            log.error(f"保存检测结果时出错: {str(e)}")
+            log.error(f"error in saving detection: {str(e)}")

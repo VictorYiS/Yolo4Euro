@@ -8,22 +8,22 @@ import grabscreen
 import utils.change_window as change_window
 from window import *
 
-# 标志位，表示是否继续运行
+# sign
 running = True
 
 
-# 处理 Ctrl+C 的函数
+# Handler for graceful exit on Ctrl+C
 def signal_handler(sig, frame):
     global running
     print("\nGracefully exiting...")
     running = False
 
 
-# 注册信号处理器
+# register the signal handler for SIGINT (Ctrl+C)
 signal.signal(signal.SIGINT, signal_handler)
 
 
-# 等待游戏窗口出现的函数
+# wait for the game window to be detected and set offsets
 def wait_for_game_window():
     while running:
         frame = grabscreen.grab_screen()
@@ -78,9 +78,9 @@ def display_gui_elements():
     # Display the frame with all rectangles
     cv2.imshow("Game Window", game_window_frame)
 
-    # 循环检测窗口是否被关闭
+    # check if the window is still open
     while True:
-        # 监听窗口关闭事件
+        # listen for the 'q' key to exit
         if cv2.getWindowProperty("Game Window", cv2.WND_PROP_VISIBLE) < 1:
             break
         if cv2.waitKey(100) & 0xFF == ord("q"):
@@ -98,31 +98,29 @@ class GameStatusApp:
         self.frame = tk.Frame(root)
         self.frame.pack(side=tk.RIGHT, padx=10, pady=10)
 
-        # 存储变量及其对应的标签
         self.variables = {}
 
     def add_variable(self, var_name, var_type="float"):
         """
-        添加一个新的追踪变量到GUI。
+        add a variable to the GUI.
 
-        :param var_name: 变量的名称，用于显示和更新
-        :param var_type: 变量的类型，'float' 或 'bool'
-        :param column: 'left' 或 'right'，决定标签显示在哪一栏
+        :param var_name: name of the variable to display
+        :param var_type: type of the variable, can be 'float', 'bool', 'integer', or 'String'
         """
         frame = self.frame
 
-        # 创建标签
+        # create a label for the variable
         label = tk.Label(frame, text=f"{var_name}: 0.00")
         label.pack(anchor="w", pady=2)
 
-        # 存储变量信息
+        # set the variable type
         self.variables[var_name] = {"type": var_type, "label": label}
 
     def update_status(self, **kwargs):
         """
-        更新多个变量的状态。
+        Update GUI variables with new values.
 
-        :param kwargs: 以变量名为键，变量值为值的键值对
+        :param kwargs: updated values for the variables.
         """
         for var_name, value in kwargs.items():
             if var_name in self.variables:
@@ -141,12 +139,12 @@ class GameStatusApp:
                 print(f"Warning: Variable '{var_name}' not found in GUI.")
 
 
-# 主程序循环，显示玩家的血条数值，并支持优雅退出
+# Main loop to initialize the GUI and update game status
 def main_loop():
     root = tk.Tk()
     app = GameStatusApp(root)
 
-    # 添加初始变量（示例）
+    # Add GUI elements for game status
 
     app.add_variable("self_speed", var_type="integer")
     app.add_variable("self_distance", var_type="integer")
@@ -158,13 +156,13 @@ def main_loop():
     if wait_for_game_window():
         display_gui_elements()
 
-        # 进入主循环
+        # Ensure all windows are initialized
         while running:
             frame = grabscreen.grab_screen()
             BaseWindow.set_frame(frame)
             BaseWindow.update_all()
 
-            # 更新 Tkinter 界面上的状态
+            # Update the game data
             app.update_status(
                 **{
                     "self_speed": self_speed_window.get_status(),
@@ -175,7 +173,7 @@ def main_loop():
                 }
             )
 
-            # 更新 Tkinter 窗口
+            # update the GUI
             root.update_idletasks()
             root.update()
 
@@ -188,7 +186,7 @@ if __name__ == "__main__":
 
     if change_window.check_window_resolution_same(game_width, game_height) == False:
         raise ValueError(
-            f"游戏分辨率和配置game_width({game_width}), game_height({game_height})不一致，请到window.py中修改"
+            f"The game resolution is inconsistent with the configuration game_width({game_width}), game_height({game_height}), please modify it in window.py"
         )
 
     print("start main_loop")

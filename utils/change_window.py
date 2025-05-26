@@ -3,12 +3,12 @@ import ctypes
 import win32gui
 from log import log
 
-EURO_TITLE = "Euro Truck Simulator 2"  # 窗口标题
+EURO_TITLE = "Euro Truck Simulator 2"  # Windows title for Euro Truck Simulator 2
 
 
 def get_window_position(title):
     try:
-        window = gw.getWindowsWithTitle(title)[0]  # 获取第一个匹配的窗口
+        window = gw.getWindowsWithTitle(title)[0]  # get the first matching window
         return window.topleft, window.bottomright
     except IndexError:
         print(f"No window with title '{title}' found.")
@@ -17,13 +17,13 @@ def get_window_position(title):
 
 def move_window(title, x, y):
     try:
-        window = gw.getWindowsWithTitle(title)[0]  # 获取第一个匹配的窗口
+        window = gw.getWindowsWithTitle(title)[0]  # get the first matching window
         window.moveTo(x, y)
     except IndexError:
         print(f"No window with title '{title}' found.")
 
 
-# 移动窗口到左上角
+# move window to the top left corner
 def set_window_topleft():
     move_window(EURO_TITLE, -8, 0)
 
@@ -31,40 +31,40 @@ def set_window_topleft():
 def is_window_visible(window_title):
     try:
         window = gw.getWindowsWithTitle(window_title)[0]
-        return window.visible  # 检查窗口是否可见
+        return window.visible  # check if the window is visible
     except IndexError:
-        return False  # 没有找到窗口
+        return False  # no window found with that title
 
 
 def is_window_active(window_title):
     try:
         window = gw.getWindowsWithTitle(window_title)[0]
-        return window.isActive  # 检查窗口是否为活动窗口
+        return window.isActive  # check if the window is active
     except IndexError:
-        return False  # 没有找到窗口
+        return False  # no window found with that title
 
 
 def restore_window(window_title):
     try:
         window = gw.getWindowsWithTitle(window_title)[0]
-        if window.isMinimized:  # 如果窗口最小化
-            window.restore()  # 恢复窗口
+        if window.isMinimized:  # minimized
+            window.restore()  # restore the window
     except IndexError:
         print(f"Window titled '{window_title}' not found.")
 
 
-# 校正窗口位置
+# check and correct the window state
 def correction_window():
     if not is_window_visible(EURO_TITLE):
         print(f"{EURO_TITLE} is not visible.")
-        restore_window(EURO_TITLE)  # 尝试恢复窗口
-        gw.getWindowsWithTitle(EURO_TITLE)[0].activate()  # 激活窗口
+        restore_window(EURO_TITLE)  # restore the window if it is minimized
+        gw.getWindowsWithTitle(EURO_TITLE)[0].activate()  # activate the window
         set_window_topleft()
 
     elif not is_window_active(EURO_TITLE):
         print(f"{EURO_TITLE} is in the background.")
-        restore_window(EURO_TITLE)  # 尝试恢复窗口
-        gw.getWindowsWithTitle(EURO_TITLE)[0].activate()  # 激活窗口
+        restore_window(EURO_TITLE)  # restore the window if it is minimized
+        gw.getWindowsWithTitle(EURO_TITLE)[0].activate()  # activate the window
         set_window_topleft()
 
     else:
@@ -72,22 +72,22 @@ def correction_window():
 
 
 def get_window_resolution(window_title):
-    # 获取窗口句柄
+    # get the handle of the window by its title
     hwnd = win32gui.FindWindow(None, window_title)
     if hwnd:
-        # 使用 GetClientRect 获取窗口的客户区域
+        # use ctypes to get the client rectangle of the window
         rect = ctypes.wintypes.RECT()
         ctypes.windll.user32.GetClientRect(hwnd, ctypes.byref(rect))
         width = rect.right - rect.left
         height = rect.bottom - rect.top
         return width, height
     else:
-        print(f"未找到标题为 '{window_title}' 的窗口。")
+        print(f"Window with title '{window_title}' not found.")
         return None
 
 
-# 检查游戏窗口分辨率是否和配置一致
+# check if the window resolution matches the expected values
 def check_window_resolution_same(weight, height):
     resolution = get_window_resolution(EURO_TITLE)
-    log.debug(f"实际分辨率：{resolution}")
+    log.debug(f"Actual resolution：{resolution}")
     return resolution[0] == weight and resolution[1] == height
