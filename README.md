@@ -2,6 +2,8 @@
 
 An AI-powered autonomous driving system for Euro Truck Simulator 2, featuring real-time lane detection, traffic light recognition, and intelligent vehicle control.
 
+Video demo: [YouTube Link](https://www.youtube.com/watch?v=gsqwVLMu3XQ)
+
 ## Features
 
 - **Lane Detection**: Real-time lane line detection using E-Net deep learning model
